@@ -34,34 +34,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    # ── Stand down until the VPS is actually configured ──────────────────────
-    # Until the four VPS_* secrets exist there is nothing to deploy to, so this
-    # job skips instead of failing. Without this guard every push to main showed
-    # a red X next to the commit — which reads as "the code is broken" when in
-    # fact nothing had been deployed yet.
-    #
-    # A skipped run shows as a neutral dot, not a failure. The moment the secrets
-    # are added, push-to-deploy starts working with no edit to this file.
-    if: ${{ secrets.VPS_HOST != '' && secrets.VPS_USER != '' && secrets.VPS_SSH_KEY != '' && secrets.VPS_APP_DIR != '' }}
-
     steps:
-      - name: Check required secrets are present
+      # ── Stand down until the VPS is configured ──────────────────────────────
+      # There is nothing to deploy to until the four VPS_* secrets exist, so
+      # until then this job reports success with every real step skipped rather
+      # than failing. A failure here reads as "the build is broken" when in fact
+      # no deployment was ever attempted.
+      #
+      # NOTE: this CANNOT be a job-level `if: secrets.*`. The secrets context is
+      # not available in `jobs.<job_id>.if` (only github/needs/vars/inputs are),
+      # and referencing it there makes the whole workflow fail to COMPILE — which
+      # shows as a run with zero jobs and a red X, the exact symptom this is
+      # meant to remove. Hence: gate inside a step, expose the result as an
+      # output, and let the remaining steps branch on it.
+      - name: Check whether the VPS is configured
+        id: vps
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
         run: |
-          missing=0
+          missing=""
           for v in VPS_HOST VPS_USER VPS_SSH_KEY VPS_APP_DIR; do
-            if [ -z "${!v}" ]; then
-              echo "::error::Secret $v is not set."
-              missing=1
-            fi
+            if [ -z "${!v}" ]; then missing="$missing $v"; fi
           done
-          [ "$missing" = "0" ] || exit 1
+          if [ -n "$missing" ]; then
+            echo "::notice title=Deploy skipped::VPS not configured yet — missing:$missing. Push-to-deploy turns itself on once these secrets are added (Settings -> Secrets and variables -> Actions)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "VPS configured — deploying."
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Write SSH key
+        if: steps.vps.outputs.ready == 'true'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
@@ -74,6 +81,7 @@ jobs:
           echo "SSH key written."
 
       - name: Deploy
+        if: steps.vps.outputs.ready == 'true'
         env:
           GIT_SHA: ${{ github.sha }}
           # These must be in the step's env, not only in the "check secrets" step.
@@ -92,6 +100,7 @@ jobs:
         # Fail the workflow if the remote script exits non-zero.
 
       - name: Smoke test the deployed stack
+        if: steps.vps.outputs.ready == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
@@ -115,7 +124,12 @@ jobs:
                "http://${VPS_HOST}:8082/lookups/uoms"
 
       - name: Recent logs on failure
-        if: failure()
+        # `always() &&` keeps this running even though the steps above are gated
+        # on the secrets check — a plain `failure()` would be false here (nothing
+        # failed, nothing ran) and the diagnostics would never appear on a real
+        # deploy failure. The second condition stops it doing anything during a
+        # normal "not configured yet" push, where there is no SSH key to use.
+        if: always() && failure() && steps.vps.outputs.ready == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
