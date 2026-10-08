@@ -60,8 +60,8 @@ git config --global user.name  "Your Name"
 git config --global user.email "you@example.com"
 ```
 
-**2.2** Create the repository on github.com first (empty, **no** README — that
-avoids a conflicting-initial-commit error). Then:
+**2.2** The repository already exists and the code is already pushed. If you ever
+need to reproduce this from scratch, the sequence is:
 
 ```powershell
 cd "E:\Procurement Application\procurement-portal"
@@ -69,15 +69,19 @@ git init -b main
 git add -A
 git status              # CHECK THIS BEFORE COMMITTING
 git commit -m "Procurement portal: initial commit for VPS deployment"
-git remote add origin https://github.com/<your-username>/<repo-name>.git
+git remote add origin git@github.com:msiddiquiowais-hub/procurement-portal.git
 git push -u origin main
 ```
+
+> HTTPS also works (`https://github.com/msiddiquiowais-hub/procurement-portal.git`)
+> if the credential manager is set up. SSH is used below because it needs no
+> password or token on the server.
 
 > You chose a **public** repo. I audited it: no real credentials, keys, or
 > `.env` files are present — only dev defaults like `proc_local`, plus demo seed
 > data (vendor names, prices, staff email addresses). Everything like that
 > becomes publicly visible and readable in history. If any of it is sensitive,
-> switch the repo to private now, before the first push.
+> switch the repo to private now.
 
 ---
 
@@ -91,11 +95,30 @@ SSH into the VPS as a non-root user and run:
 sudo apt update && sudo apt install -y git curl
 ```
 
-**3.2** Clone the repo:
+**3.2** Clone the repo over SSH:
 
 ```bash
-git clone https://github.com/<your-username>/<repo-name>.git ~/procurement-portal
+git clone git@github.com:msiddiquiowais-hub/procurement-portal.git ~/procurement-portal
 cd ~/procurement-portal
+```
+
+GitHub only trusts SSH keys it knows about, so the **VPS** needs its own key
+registered — your laptop's key does not travel with the server:
+
+```bash
+# on the VPS
+ssh-keygen -t ed25519 -C "vps-deploy" -f ~/.ssh/id_ed25519 -N ""
+cat ~/.ssh/id_ed25519.pub
+```
+
+Then add that output on GitHub under **Settings → Deploy keys** for the repo.
+Read-only access is enough. If it cannot read the key into the clipboard, paste
+the text directly into the Deploy keys box.
+
+Confirm it before going further:
+
+```bash
+ssh -T git@github.com          # expect: "Hi <user>! You've successfully authenticated"
 ```
 
 **3.3** Create the config file (this holds the passwords — keep it out of git):
@@ -154,7 +177,12 @@ Open `http://<VPS_IP>:8080` and log in with a seeded account.
 
 ---
 
-## Part 5 — Automate it on every push
+## Part 5 — Automate it on every push (optional)
+
+> **Skip this part if you are deploying by hand.** Nothing in Parts 1–4 needs it.
+> Manual deploy is `git pull && ./deploy/deploy.sh` on the VPS (Part 6). Until
+> the four secrets below exist, the workflow skips itself and your commits show a
+> green check with nothing deployed — which is the intended state.
 
 **5.1** Generate a deploy key on your **laptop**:
 
@@ -189,22 +217,24 @@ From now on: `git push` is the whole deploy.
 
 ## Part 6 — Day-to-day
 
-```powershell
-git add -A
-git commit -m "description of the change"
-git push
-```
-
-Watch the run in the Actions tab. If it goes red, the failure step prints the
-container logs automatically.
-
-To deploy by hand on the VPS (useful when Actions is blocked):
+If you deploy by hand, this is the whole loop:
 
 ```bash
 cd ~/procurement-portal
 git pull
 ./deploy/deploy.sh
 ```
+
+From your laptop, push whenever you have finished pushing the application:
+
+```powershell
+git add -A
+git commit -m "description of the change"
+git push
+```
+
+Watch the run in the Actions tab if you have enabled Part 5. If it goes red, the
+failure step prints the container logs automatically.
 
 ---
 
