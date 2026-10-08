@@ -1,0 +1,60 @@
+# docker-compose.yml — Procurement Portal local stack
+# Container folder: procurement-portal
+# DB name: procurementDB
+# Host-port remap to avoid conflicts with existing apps on this laptop:
+#   qc-postgres     (postgres 18)        host 5432
+#   ideas-postgres  (postgres 16)        host 5433
+#   open-webui                            host 3000
+#   n8n                                   host 5678
+#
+# Our ports (free on this host):
+#   Postgres 15 (proc) -> host 55432   (container 5432)
+#   MinIO API         -> host  9001    (container 9000)
+#   MinIO Console     -> host  9002    (container 9001)
+#   NestJS API        -> host 33001    (container 3000) — started separately
+#   Web Admin (Next)  -> host 33002    (container 3001) — started separately
+#   Supplier Portal   -> host 33003    (container 3002) — started separately
+#   Public Onboarding -> host 33004    (container 3003) — started separately
+#
+# Usage:
+#   docker compose -f db/docker/docker-compose.yml up -d
+#   ./scripts/migrate.sh
+#   ./scripts/seed.sh
+#   ./scripts/verify.sh
+#   docker compose -f db/docker/docker-compose.yml down   # stop
+#   docker compose -f db/docker/docker-compose.yml down -v   # stop + drop data
+
+services:
+  postgres:
+    container_name: procurement-portal-db
+    image: postgres:16  # postgres:15-alpine not cached locally and daemon can't pull new images
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: proc
+      POSTGRES_PASSWORD: proc_local
+      POSTGRES_DB: procurementDB
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "55432:5432"
+    volumes:
+      - procurement-portal-pgdata:/var/lib/postgresql/data
+      - ../migrations:/docker-entrypoint-initdb.d/migrations:ro
+      - ../seeds:/docker-entrypoint-initdb.d/seeds:ro
+      - ./01-wipe-pgdata-if-empty.sh:/docker-entrypoint-initdb.d/01-wipe-pgdata-if-empty.sh:ro
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command:
+      - "bash"
+      - "-c"
+      - "/docker-entrypoint-initdb.d/01-wipe-pgdata-if-empty.sh; docker-entrypoint.sh postgres -c config_file=/etc/postgresql/postgresql.conf"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proc -d procurementDB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+# MinIO intentionally omitted: the host's docker daemon cannot pull new images.
+# Attachments can be served from local disk for dev; production uses MinIO/Azure Blob.
+# To add MinIO later, append the `minio` service and create the named volume.
+
+volumes:
+  procurement-portal-pgdata:

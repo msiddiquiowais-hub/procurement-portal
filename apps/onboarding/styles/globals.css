@@ -1,0 +1,133 @@
+/* apps/onboarding — the prototype's own CSS, extracted verbatim.
+ *
+ * Source: PROCUREMENT_PORTAL_PROTOTYPE.html's <style> block. Every value below
+ * is copied from the prototype, not chosen here, because vendor-onboard-public is
+ * a PORTED screen and W4-4 makes the prototype the source of truth.
+ *
+ * Only the rules the public form actually uses are carried over. The prototype's
+ * sheet is ~44 KB and covers every screen; copying all of it into a one-form app
+ * would import hundreds of rules for components that do not exist here.
+ *
+ * Kept verbatim means kept recognisable: if a selector looks odd, it is the
+ * prototype's, and changing it is a fidelity change, not a cleanup.
+ */
+
+:root {
+  --navy:#1F3A5F;--navy-2:#2A4D7A;--slate:#475569;--slate-soft:#64748B;
+  --line:#E2E8F0;--line-soft:#F1F5F9;--bg:#F8FAFC;--surface:#FFFFFF;
+  --surface-2:#FAFBFC;
+  --accent:#2E86C1;--accent-2:#5fa9d6;--accent-soft:#EFF6FF;--accent-glow:rgba(46,134,193,.15);
+  --success:#16A34A;--warn:#F59E0B;
+  --danger:#DC2626;--violet:#7C3AED;--pink:#EC4899;--cyan:#0891B2;
+  --sky:#0EA5E9;
+  --text:#0F172A;--text-2:#334155;--text-mute:#64748B;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.04),0 1px 3px rgba(15,23,42,.06);
+  --shadow:0 1px 2px rgba(15,23,42,.04),0 6px 16px rgba(15,23,42,.06);
+  --shadow-lg:0 12px 28px rgba(15,23,42,.10);
+  --shadow-focus:0 0 0 3px var(--accent-glow);
+  --radius:10px;--radius-lg:14px;
+  --input-border:#CBD5E1;--input-border-hover:#94A3B8;--input-radius:8px;
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:'Inter',system-ui,-apple-system,sans-serif;
+  background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+
+input[type="text"],input[type="number"],input[type="email"],input[type="date"], input:not([type]),select,textarea{
+  font-family:inherit;color:var(--text);border:1px solid var(--input-border);
+  border-radius:var(--input-radius);padding:9px 12px;font-size:13px;background:#fff;
+  transition:border-color .15s,box-shadow .15s,background-color .15s;width:100%;
+}
+input[type="text"]:hover,input[type="number"]:hover,input[type="email"]:hover,select:hover,textarea:hover{border-color:var(--input-border-hover)}
+input[type="text"]:focus,input[type="number"]:focus,input[type="email"]:focus,select:focus,textarea:focus{
+  outline:none;border-color:var(--accent);box-shadow:var(--shadow-focus);background:#fff;
+}
+
+/* ── the public shell (prototype .public-screen / .public-shell) ─────────── */
+/* The prototype hides .public-screen by default and reveals it with a
+   `body.screen-public` class, because ITS single page hosts three mutually
+   exclusive shells (app / login / public). This app has exactly one page and one
+   shell, so the class is dropped and .public-screen simply displays. Everything
+   else about the rule is the prototype's. */
+.public-screen{display:block;min-height:100vh;background:var(--bg)}
+.public-shell{max-width:880px;margin:0 auto;padding:48px 24px}
+
+.brand-logo{
+  width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  border-radius:8px;display:grid;place-items:center;color:white;font-weight:700;font-size:14px;
+}
+
+/* ── card ────────────────────────────────────────────────────────────────── */
+.card{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);
+  overflow:hidden;box-shadow:var(--shadow-sm);
+}
+.card-b{padding:18px 20px}
+
+/* ── alert ───────────────────────────────────────────────────────────────── */
+.alert{
+  padding:12px 14px;border-radius:8px;font-size:13px;display:flex;align-items:flex-start;
+  gap:10px;margin-bottom:14px;
+}
+.alert.info{background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF}
+.alert.error{background:#FEF2F2;border:1px solid #FECACA;color:#991B1B}
+.alert.success{background:#F0FDF4;border:1px solid #BBF7D0;color:#166534}
+
+/* ── fields ──────────────────────────────────────────────────────────────── */
+label.field{margin-bottom:14px;display:block}
+label.field .lbl{
+  font-size:11px;font-weight:600;color:var(--text-2);text-transform:uppercase;
+  letter-spacing:.05em;margin-bottom:6px;display:block;
+}
+label.field .lbl .req{color:var(--danger);margin-left:2px}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* ── button ──────────────────────────────────────────────────────────────── */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;
+  font-size:13px;font-weight:500;background:var(--surface);border:1px solid var(--line);
+  color:var(--text);transition:all .12s;
+}
+.btn:hover{background:var(--bg);border-color:var(--slate-soft)}
+.btn.primary{background:var(--accent);color:white;border-color:var(--accent)}
+.btn.primary:hover{background:#2573a8;border-color:#2573a8}
+.btn:disabled{opacity:.6;cursor:not-allowed}
+.btn:disabled:hover{background:var(--accent);border-color:var(--accent)}
+
+/* ── text ────────────────────────────────────────────────────────────────── */
+.text-mute{color:var(--text-mute)}
+.text-sm{font-size:12px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ── icons ───────────────────────────────────────────────────────────────── */
+svg.icon{width:18px;height:18px;display:inline-block;vertical-align:middle;flex-shrink:0}
+svg.icon.sm{width:14px;height:14px}
+
+.empty-state{padding:40px 20px;text-align:center;color:var(--text-mute);font-size:13px}
+
+/* ── the submitted-reference panel ─────────────────────────────────────────
+ * Not in the prototype. The prototype's submit handler swaps the whole screen
+ * to an internal vendor-risk view because it fakes a logged-in procurement
+ * session. A real public applicant has no session and no next screen, so the
+ * honest end state is the reference they were given plus a way to check on it.
+ * Styled from the same tokens so it does not look bolted on.
+ */
+.ref-panel{text-align:center;padding:8px 0 4px}
+.ref-value{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:22px;font-weight:700;
+  color:var(--accent);letter-spacing:.02em;margin:6px 0 2px;
+}
+.ref-note{font-size:12px;color:var(--text-mute);margin-bottom:18px}
+.lookup-row{display:flex;gap:8px;max-width:360px;margin:0 auto}
+.lookup-row input{flex:1}
+.lookup-result{
+  margin-top:14px;text-align:left;border:1px solid var(--line);border-radius:var(--radius);
+  padding:12px 14px;background:var(--surface-2);font-size:13px;
+}
+.lookup-result .state{font-weight:700;text-transform:capitalize}

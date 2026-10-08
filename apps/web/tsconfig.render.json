@@ -1,0 +1,28 @@
+{
+  "//": [
+    "Compile-only config for the Wave 3 RENDER tests (apps/web/tests/*.tsx).",
+    "The web app itself is built by Next/SWC and never type-checked to JS, so",
+    "there was no way to assert that a governance screen actually renders the",
+    "prototype's copy. This emits CommonJS so `node --test` can require the",
+    "components and call react-dom/server's renderToStaticMarkup on them.",
+    "Not used by `next build` — see apps/web/tsconfig.json for that."
+  ],
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "incremental": false,
+    "declaration": false,
+    "sourceMap": false,
+    "jsx": "react-jsx",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".render-build",
+    "rootDir": "."
+  },
+  "include": [
+    "tests/**/*.tsx",
+    "components/governance/GovernanceCards.tsx",
+    "components/supplier/SupplierCards.tsx",
+    "lib/ui.tsx"
+  ]
+}

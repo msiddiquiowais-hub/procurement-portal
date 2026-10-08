@@ -1,0 +1,1020 @@
+/* ============================================================
+   Procurement Portal — design tokens ported from
+   PROCUREMENT_PORTAL_PROTOTYPE.html (v1.8.0 PR-light palette).
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --navy:#1F3A5F; --navy-2:#2A4D7A; --slate:#475569; --slate-soft:#64748B;
+  --line:#E2E8F0; --line-soft:#F1F5F9; --bg:#F8FAFC; --surface:#FFFFFF; --surface-2:#FAFBFC;
+  --accent:#2E86C1; --accent-2:#5fa9d6; --accent-soft:#EFF6FF; --accent-glow:rgba(46,134,193,.15);
+  --success:#16A34A; --warn:#F59E0B; --danger:#DC2626;
+  --text:#0F172A; --text-2:#334155; --text-mute:#64748B;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.04),0 1px 3px rgba(15,23,42,.06);
+  --shadow:0 1px 2px rgba(15,23,42,.04),0 6px 16px rgba(15,23,42,.06);
+  --shadow-focus:0 0 0 3px var(--accent-glow);
+  --radius:10px; --radius-lg:14px;
+  --input-border:#CBD5E1; --input-border-hover:#94A3B8; --input-radius:8px;
+  --sidebar-w:248px; --header-h:60px;
+  --pr:#0F766E; --pr-soft:#CCFBF1; --pr-line:#99F6E4;
+  --mgt:#7C2D12; --mgt-soft:#FED7AA; --mgt-line:#FDBA74;
+}
+
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+a { color: var(--accent); text-decoration: none; }
+code, .mono { font-family: 'JetBrains Mono', monospace; }
+
+/* ============================ APP LAYOUT ============================ */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  min-height: 100vh;
+}
+.sidebar {
+  background: var(--navy);
+  color: #cbd5e1;
+  padding: 20px 0 24px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px 20px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.brand-logo {
+  width: 32px; height: 32px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-radius: 8px;
+  display: grid; place-items: center;
+  color: white;
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.brand-logo.lg { width: 48px; height: 48px; font-size: 18px; margin: 0 auto 16px; }
+.brand-name { color: white; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+.brand-sub  { color: #94a3b8; font-size: 11px; }
+
+.nav-section {
+  padding: 18px 14px 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+  font-weight: 600;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  margin: 1px 6px;
+  border-radius: 6px;
+  color: #cbd5e1;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .12s;
+  position: relative;
+}
+.nav-item:hover { background: rgba(255,255,255,.06); color: #fff; }
+.nav-item.active { background: rgba(46,134,193,.25); color: #fff; }
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 6px; bottom: 6px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+.nav-item.locked { opacity: 0.45; cursor: not-allowed; }
+
+/* ── B4: the prototype sidebar has 33 role-gated items, so it scrolls
+   independently of the sticky "Session" footer. ───────────────────────── */
+.sidebar { display: flex; flex-direction: column; }
+.sidebar-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+/* A prototype screen that exists but is not ported yet. Rendered so the
+   role-gated structure is visible and testable, inert so it cannot 404. */
+.nav-item-pending {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.nav-item-pending:hover { background: none; color: inherit; }
+.nav-item-pending svg { opacity: 0.7; }
+.nav-badge {
+  margin-left: auto;
+  font-size: 9px;
+  letter-spacing: .04em;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.10);
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.main { display: flex; flex-direction: column; min-width: 0; }
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: var(--header-h);
+  padding: 0 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.breadcrumb { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-mute); }
+.breadcrumb .crumb-cur { color: var(--text); font-weight: 600; }
+.crumb-sep { color: var(--text-mute); opacity: 0.6; }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.role-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.role-pill .role-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.role-pill select { background: transparent; border: none; font-weight: 600; font-size: 12px; color: var(--text); cursor: pointer; padding: 0 4px; }
+
+.content { padding: 24px 28px 64px; max-width: 1400px; }
+
+/* ============================ TYPOGRAPHY ============================ */
+.page-title {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--navy);
+  margin-bottom: 6px;
+  position: relative;
+  padding-bottom: 12px;
+}
+.page-title::after {
+  content: "";
+  position: absolute;
+  left: 0; bottom: 0;
+  height: 3px; width: 56px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 2px;
+}
+.page-sub {
+  color: var(--text-2);
+  font-size: 13.5px;
+  margin-bottom: 24px;
+  line-height: 1.55;
+  max-width: 820px;
+}
+.section-h {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--navy);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 22px 0 12px;
+  padding: 8px 0 8px 12px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  background: linear-gradient(90deg, var(--accent-soft), transparent 60%);
+  border-radius: 2px;
+}
+.text-mute { color: var(--text-mute); }
+.text-sm { font-size: 12px; }
+.req { color: var(--danger); }
+
+/* ============================ CARDS ============================ */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow .15s, border-color .15s, transform .15s;
+}
+.card:hover { box-shadow: var(--shadow); }
+.card-h {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex; align-items: center; gap: 10px;
+}
+.card-h h3 { font-size: 15px; font-weight: 600; flex: 1; letter-spacing: -0.005em; }
+.card-h .meta { font-size: 12px; color: var(--text-mute); }
+.card-b { padding: 18px 20px; }
+
+.card.kpi { padding: 16px 18px; }
+.card.kpi .kpi-label { font-size: 11px; color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+.card.kpi .kpi-value { font-size: 24px; font-weight: 700; margin-top: 6px; color: var(--text); letter-spacing: -0.02em; }
+.card.kpi .kpi-sub { font-size: 11px; color: var(--text-mute); margin-top: 4px; }
+.card.kpi .kpi-sub.up { color: var(--success); }
+
+.grid { display: grid; gap: 16px; }
+.g-2 { grid-template-columns: 1fr 1fr; }
+.g-3 { grid-template-columns: repeat(3, 1fr); }
+.g-4 { grid-template-columns: repeat(4, 1fr); }
+.g-2-1 { grid-template-columns: 2fr 1fr; }
+.mb-2 { margin-bottom: 8px; } .mb-3 { margin-bottom: 12px; } .mb-4 { margin-bottom: 16px; } .mb-6 { margin-bottom: 24px; }
+.row-flex { display: flex; align-items: center; gap: 12px; }
+.row-flex .spacer { flex: 1; }
+
+/* ============================ FORM CONTROLS ============================ */
+input[type="text"], input[type="number"], input[type="email"], input[type="date"],
+input:not([type]), select, textarea {
+  font-family: inherit; color: var(--text);
+  border: 1px solid var(--input-border);
+  border-radius: var(--input-radius);
+  padding: 9px 12px;
+  font-size: 13px;
+  background: #fff;
+  transition: border-color .15s, box-shadow .15s, background-color .15s;
+  width: 100%;
+}
+input:hover, select:hover, textarea:hover { border-color: var(--input-border-hover); }
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent); box-shadow: var(--shadow-focus); background: #fff;
+}
+input::placeholder, textarea::placeholder { color: #94A3B8; }
+input:disabled, select:disabled, textarea:disabled { background: #F8FAFC; color: var(--text-mute); cursor: not-allowed; opacity: 0.9; }
+
+select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M3 4.5 L6 7.5 L9 4.5' stroke='%2364748B' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 12px 12px;
+  padding-right: 32px; cursor: pointer;
+}
+select::-ms-expand { display: none; }
+textarea { resize: vertical; min-height: 42px; line-height: 1.45; }
+
+label.field { margin-bottom: 14px; display: block; }
+label.field .lbl {
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block;
+}
+.field-row { display: flex; gap: 14px; }
+.field-row > * { flex: 1; }
+
+/* ============================ BUTTONS ============================ */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 8px;
+  font-size: 13px; font-weight: 500;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+  transition: all .12s;
+  cursor: pointer;
+}
+.btn:hover { background: var(--bg); border-color: var(--slate-soft); }
+.btn.sm { padding: 5px 10px; font-size: 12px; }
+.btn.primary { background: var(--accent); color: white; border-color: var(--accent); }
+.btn.primary:hover { background: #2573a8; border-color: #2573a8; }
+.btn.success { background: var(--success); color: white; border-color: var(--success); }
+.btn.success:hover { background: #138a3f; }
+.btn.danger  { background: var(--surface); color: var(--danger); border-color: var(--danger); }
+.btn.danger:hover { background: #FEF2F2; }
+.btn.warn { background: var(--warn); color: white; border-color: var(--warn); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--accent); padding: 6px 10px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn svg { width: 14px; height: 14px; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+
+/* ============================ WALKTHROUGH BAND ============================ */
+.walkthrough {
+  background: linear-gradient(135deg, #0F172A, #1F3A5F);
+  color: #E2E8F0;
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  display: flex; align-items: center; gap: 14px;
+  box-shadow: var(--shadow);
+}
+.walkthrough .step-num {
+  background: var(--accent); color: white;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-weight: 700; font-size: 13px; flex-shrink: 0;
+}
+.walkthrough .step-text { font-size: 13px; line-height: 1.45; flex: 1; }
+.walkthrough .step-text b { color: white; font-weight: 600; }
+.walkthrough .step-text code { background: rgba(255,255,255,.1); padding: 2px 6px; border-radius: 4px; color: #A5F3FC; font-size: 12px; }
+.walkthrough button.skip {
+  background: rgba(255,255,255,.12); color: white;
+  padding: 6px 12px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; margin-left: 6px;
+  border: none; cursor: pointer;
+}
+.walkthrough button.skip:hover { background: rgba(255,255,255,.2); }
+
+/* ============================ TABLE (PR detail / dashboard) ============================ */
+table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.tbl th, table.tbl td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.tbl th { background: var(--surface-2); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-mute); }
+table.tbl tr:hover td { background: var(--bg); }
+
+/* ============================ LINE-CARD ITEM TABLE (new PR) ============================ */
+.pr-items-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+.pr-items-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pr-items-head-left h3 { font-size: 14px; font-weight: 700; color: var(--navy); margin-bottom: 2px; }
+.pr-items-head-left p  { font-size: 12px; color: var(--text-mute); }
+.pr-items-head-right { display: flex; gap: 8px; }
+.pr-add-link {
+  background: transparent; color: var(--accent); border: 1px solid var(--accent);
+  padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.pr-add-link:hover { background: var(--accent-soft); }
+.pr-remove-selected {
+  background: transparent; color: var(--danger); border: 1px solid var(--danger);
+  padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+}
+.pr-remove-selected:disabled { color: var(--slate-soft); border-color: var(--line); cursor: not-allowed; }
+.pr-items-scroll { overflow-x: auto; }
+table.pr-items-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.pr-items-table th, table.pr-items-table td { padding: 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.pr-items-table th {
+  background: var(--surface-2);
+  font-weight: 700; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-mute);
+  padding: 9px 10px;
+}
+table.pr-items-table td > input,
+table.pr-items-table td > select {
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+table.pr-items-table td > input:focus,
+table.pr-items-table td > select:focus {
+  border-color: var(--accent);
+  background: #fff;
+  box-shadow: var(--shadow-focus);
+}
+.pr-col-check { width: 36px; text-align: center; }
+.pr-cell-check { width: 36px; text-align: center; }
+.pr-cell-del  { width: 36px; text-align: center; }
+/* Unit price is optional and usually blank ("TBD"), so it is sized for a
+   placeholder and a five-figure figure rather than for the longest label. */
+.pr-col-price  { width: 110px; }
+/* The category option text is "Name — description", which is far too long for
+   a table cell. The select is given a generous width and the native popup
+   handles the rest; the full description is also on the element's title so a
+   hover shows it without opening the list. */
+.pr-col-category { width: 220px; }
+table.pr-items-table select.pr-select-wide { min-width: 200px; }
+.pr-row-del {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--line);
+  font-size: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pr-row-del:hover { background: #FEE2E2; border-color: var(--danger); }
+.pr-items-totals td {
+  padding: 12px 14px; background: var(--surface-2);
+  font-size: 13px; color: var(--text-2);
+  border-bottom: none;
+}
+.pr-items-totals .grand {
+  font-size: 16px; font-weight: 700; color: var(--navy);
+}
+
+/* ============================ PR HEADER GRID ============================ */
+.pr-header-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.pr-header-grid-row2 { grid-template-columns: 1.4fr 1fr; }
+.pr-hdr-attach .light-image-uploader {
+  border: 2px dashed var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: #FAFBFC;
+}
+.light-image-count-chip {
+  background: var(--accent-soft); color: var(--accent);
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+}
+
+/* ============================ PILLS / STATUS ============================ */
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  background: #eef2f8;
+  color: var(--navy);
+}
+.pill.success { background: var(--pr-soft); color: var(--pr); }
+.pill.warn    { background: #FEF3C7; color: #92400E; }
+.pill.danger  { background: #FEE2E2; color: var(--danger); }
+.pill.info    { background: var(--accent-soft); color: var(--accent); }
+/* Emitted by vendors.service.ts for a vendor with no risk scorecard on file.
+   Neutral on purpose: "not yet assessed" is neither a pass nor a failure, and
+   colouring it green or red would assert a judgement the data does not carry. */
+.pill.unrated { background: var(--line-soft); color: var(--text-mute); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Wave 1 — classes ported verbatim from the prototype's stylesheet so the
+   ported screens render identically. Values copied from
+   PROCUREMENT_PORTAL_PROTOTYPE.html, not invented here.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* data table */
+.t { width: 100%; border-collapse: collapse; font-size: 13px; }
+.t th {
+  text-align: left; padding: 10px 12px; font-size: 11px; color: var(--text-mute);
+  text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+  border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.t td { padding: 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.t td.mono.num { text-align: right; font-variant-numeric: tabular-nums; }
+.t tr:last-child td { border-bottom: none; }
+.t tr.clickable { cursor: pointer; }
+.t tr.clickable:hover td { background: var(--bg); }
+
+.mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* light-pr-list KPI header */
+.kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; }
+.kpi-card { padding: 18px 22px; border-right: 1px solid #E2E8F0; background: #fff; }
+.kpi-card:last-child { border-right: none; }
+.kpi-label {
+  font-size: 11px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: #64748B; margin-bottom: 6px;
+}
+.kpi-value { font-size: 32px; font-weight: 700; color: #0F172A; line-height: 1.1; margin-bottom: 4px; }
+.kpi-sub { font-size: 12px; color: #94A3B8; }
+
+/* gradient header card used by light-pr-list */
+.list-hero { overflow: hidden; margin-bottom: 16px; }
+.list-hero-head {
+  background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 100%);
+  color: #fff; border-bottom: none; padding: 18px 22px;
+}
+.list-hero-head h2 { margin: 0; color: #fff; font-size: 20px; font-weight: 700; }
+.list-hero-sub { margin-top: 4px; font-size: 13px; color: #DBEAFE; }
+.list-hero-view { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #DBEAFE; }
+.list-hero-body { padding: 0; }
+
+/* row + chip atoms */
+.row-title { font-weight: 600; color: var(--text); font-size: 13px; line-height: 1.3; }
+.row-sub { font-size: 11px; color: var(--text-mute); margin-top: 2px; }
+.dept-chip {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  background: #EEF2FF; color: #1E3A8A; font-size: 11px; font-weight: 600;
+  letter-spacing: .02em; white-space: nowrap;
+}
+.item-chip-row { display: flex; flex-wrap: wrap; gap: 4px; max-width: 280px; }
+.item-chip-prev {
+  display: inline-block; padding: 3px 8px; border-radius: 6px;
+  background: #F1F5F9; color: #334155; font-size: 11px; line-height: 1.3;
+  border: 1px solid var(--line-soft); white-space: nowrap;
+  max-width: 240px; overflow: hidden; text-overflow: ellipsis;
+}
+.item-chip-more {
+  display: inline-block; padding: 3px 8px; border-radius: 6px;
+  background: #1E3A8A; color: #fff; font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+
+.empty-state { padding: 40px 20px; text-align: center; color: var(--text-mute); font-size: 13px; }
+
+/* approvals queue rows */
+.queue-row {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex; align-items: center; gap: 14px; cursor: pointer;
+}
+.queue-row:last-child { border-bottom: none; }
+.queue-row:hover { background: var(--bg); }
+
+/* light-pr-detail: 10-step progress pills + the 6-cell summary grid */
+.timeline-steps {
+  display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 14px;
+}
+.timeline-steps .pill { font-size: 10px; }
+.pr-form-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 18px;
+  margin-top: 4px;
+}
+@media (max-width: 900px) { .pr-form-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* accent pill variants used by the stage timeline and management gate */
+.pill.pr { background: var(--pr-soft); color: var(--pr); }
+.pill.pr-d365 { background: #1E3A8A; color: #fff; }
+.pill.pr-mgt { background: #F5F3FF; color: #5B21B6; border: 1px solid #DDD6FE; }
+
+/* ═══ acknowledge screen ════════════════════════════════════════════════
+   Pill colours copied from the prototype's ackPill() / ackSummaryChip(). */
+.ack-deep-link {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; color: var(--accent);
+  background: #EFF6FF; border: 1px solid #BFDBFE;
+  padding: 2px 6px; border-radius: 4px;
+}
+.pill.ack-done    { background: #D1FAE5; color: #065F46; border: 1px solid #A7F3D0; }
+.pill.ack-pending { background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; }
+.pill.ack-none    { background: var(--line-soft); color: var(--text-mute); }
+
+.approver-row {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex; align-items: center; gap: 12px;
+}
+.approver-row:last-child { border-bottom: none; }
+.avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; flex-shrink: 0;
+}
+.role-tag {
+  background: var(--bg); padding: 2px 6px; border-radius: 4px;
+  font-size: 10px; color: var(--text-mute);
+  text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0;
+}
+.ack-tagger { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.ack-tagger-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ack-tagger-row select { width: 160px; }
+.ack-tagger-row input { flex: 1; min-width: 200px; }
+
+/* ═══ legacy capital-PR trio (my-prs / pr-create / pr-detail) ═══════════
+   Pill + chip colours copied from the prototype's splitPill() and the
+   classification chip strip on renderPRCreate. */
+.pill.capex  { background: #CFFAFE; color: #155E75; border: 1px solid #A5F3FC; }
+.pill.opex   { background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; }
+.pill.mixed  { background: #EDE9FE; color: #5B21B6; border: 1px solid #DDD6FE; }
+
+/* ── RFQ status pills ────────────────────────────────────────────────────────
+   Copied verbatim from the prototype stylesheet (lines 222-229). rfq-list and
+   rfq-detail render `r.pill` straight from rfqStatusView(), which returns the
+   prototype's own class names: draft | pending | submitted | approved | locked.
+   Do not "harmonise" these against the tone classes above — the prototype's
+   RFQ vocabulary is a separate, deliberate palette. */
+.pill.draft     { background: #F1F5F9; color: #475569; }
+.pill.pending   { background: #FEF3C7; color: #92400E; }
+.pill.submitted { background: #DBEAFE; color: #1E40AF; }
+.pill.approved  { background: #D1FAE5; color: #065F46; }
+.pill.rejected  { background: #FEE2E2; color: #991B1B; }
+.pill.pushed    { background: #E0E7FF; color: #3730A3; }
+.pill.locked    { background: #FCE7F3; color: #9D174D; }
+
+/* ── rfq-detail bid rows ─────────────────────────────────────────────────────
+   Copied verbatim from the prototype stylesheet (bid-row, bid-row.head,
+   bid-row.winner). The six-column grid is Vendor | Amount | Lead | Warranty |
+   Compliance | the trailing winner slot.
+
+   Note `.bid-winner` has NO rule in the prototype — it is a bare markup hook,
+   so there is deliberately no CSS for it here either. */
+.bid-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 90px; gap: 10px; padding: 12px; border-bottom: 1px solid var(--line-soft); align-items: center; font-size: 13px; }
+.bid-row.head { font-weight: 600; color: var(--text-mute); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; background: var(--bg); }
+.bid-row.winner { background: #F0FDF4; }
+
+.line-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 14px 14px 40px;
+  position: relative;
+  margin-bottom: 12px;
+  background: #fff;
+}
+.line-card.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.line-select { position: absolute; left: 14px; top: 16px; }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--line); background: #fff; color: var(--text-mute); cursor: pointer;
+}
+.chip:disabled { opacity: .45; cursor: not-allowed; }
+.chip.on { color: #fff; border-color: transparent; }
+.chip.capex.on, .chip.asset.on { background: #0E7490; }
+.chip.infra.on { background: #155E75; }
+.chip.consumable.on, .chip.service.on, .chip.maintenance.on { background: #B45309; }
+.chip.static { cursor: default; }
+.chip.static.capex, .chip.static.asset, .chip.static.infra { background: #CFFAFE; color: #155E75; }
+.chip.static.consumable, .chip.static.service, .chip.static.maintenance { background: #FEF3C7; color: #92400E; }
+
+/* sticky totals bar — prototype stTotalsBar */
+.totals-bar {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  position: sticky; bottom: 0;
+}
+.tb-item { padding: 14px 20px; border-right: 1px solid var(--line-soft); }
+.tb-item:last-child { border-right: none; }
+.tb-item span {
+  display: block; font-size: 10px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-mute); font-weight: 600; margin-bottom: 4px;
+}
+.tb-item b { font-size: 16px; }
+.tb-item.grand { background: #fff; }
+.tb-item.grand b { font-size: 20px; }
+
+/* financial dimensions accordion */
+.dim-acc { border: 1px solid var(--line-soft); border-radius: 6px; margin-top: 10px; }
+.dim-acc-head {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  padding: 9px 12px; background: var(--bg); border: 0; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: var(--text);
+}
+.dim-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+  padding: 12px; border-top: 1px solid var(--line-soft);
+}
+@media (max-width: 900px) { .dim-grid { grid-template-columns: repeat(2, 1fr); } }
+.dim-grid input.missing { border-color: #FCA5A5; background: #FEF2F2; }
+
+.dim-inline { padding: 4px 0; }
+.dim-toggle {
+  background: none; border: 0; cursor: pointer; font-size: 12px;
+  color: var(--accent); font-weight: 600; padding: 2px 0;
+}
+.dim-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 6px; }
+.dim-chip {
+  display: inline-flex; flex-direction: column; gap: 1px;
+  padding: 5px 9px; border-radius: 6px; font-size: 11px;
+  background: var(--bg); color: var(--text-mute); border: 1px solid var(--line-soft);
+}
+.dim-chip b { font-size: 10px; letter-spacing: .03em; text-transform: uppercase; font-weight: 700; }
+.dim-chip.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.dim-chip.mand::after { content: " *"; color: var(--danger); }
+
+.gate-list { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-direction: column; gap: 5px; }
+.gate-list li { font-size: 13px; }
+.gate-list li.ok { color: var(--success); }
+.gate-list li.no { color: var(--danger); }
+
+/* urgency / split badges on list rows */
+.urgency-urgent { color: var(--danger); font-weight: 600; }
+.urgency-force_majeure { color: #92400E; font-weight: 600; }
+.split-flag {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 6px;
+  background: #EDE9FE; color: #5B21B6; font-size: 10px; font-weight: 700;
+}
+
+/* ============================ KV / DETAIL ROWS ============================ */
+.kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 14px; font-size: 13px; }
+.kv .k { color: var(--text-mute); font-weight: 600; }
+.kv .v { color: var(--text); }
+.kv .v.mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+/* ============================ ALERTS ============================ */
+.alert {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border-radius: 8px;
+  font-size: 13px; line-height: 1.5;
+  margin-bottom: 14px;
+}
+.alert.info    { background: var(--accent-soft); color: #1e3a8a; border: 1px solid #BFDBFE; }
+.alert.success { background: #dcfce7; color: var(--success); border: 1px solid #86efac; }
+.alert.danger  { background: #fee2e2; color: var(--danger); border: 1px solid #fca5a5; }
+.alert.warn    { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+.alert svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 1px; }
+/* `.alert.error` is the spelling used by ~20 screens; the prototype's alert
+   vocabulary is `.danger`. Aliased rather than renamed so both spellings render
+   the identical red and cannot drift apart. */
+.alert.error    { background: #fee2e2; color: var(--danger); border: 1px solid #fca5a5; }
+
+/* ── KPI strip inside a card body ─────────────────────────────────────────────
+   The prototype's `.kpi-row` / `.kpi-card` pair (prototype line 257) as used by
+   the vendor, risk, UOM, portal and award-matrix screens. `repeat(auto-fit)`
+   rather than the prototype's fixed `repeat(3,1fr)` because these strips carry
+   between 3 and 5 cells depending on the screen, and a fixed count would strand
+   a lone cell on its own row. */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  margin: 0 -4px;
+}
+.stat-row > div {
+  padding: 4px 14px;
+  border-left: 1px solid var(--line);
+}
+.stat-row > div:first-child { border-left: none; padding-left: 4px; }
+.stat-n {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+/* ============================ LOGIN SCREEN ============================ */
+.login-screen, .public-screen {
+  min-height: 100vh;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login-shell, .public-shell { width: 100%; max-width: 380px; }
+
+/* ============================ PK- LEGACY (kept for compatibility) ============================ */
+.pk-shell { max-width: 1180px; margin: 0 auto; padding: 20px; }
+.pk-header {
+  display: flex; align-items: center; justify-content: space-between;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; padding: 16px 24px; border-radius: 12px; margin-bottom: 18px;
+  box-shadow: var(--shadow);
+}
+.pk-header h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.02em; }
+.pk-header .pk-role { background: rgba(255,255,255,.18); padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.pk-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 16px; }
+.pk-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.pk-col { display: flex; flex-direction: column; gap: 6px; }
+.pk-col > label { font-size: 12px; color: var(--text-mute); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.pk-btn { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; font-size: 13px; }
+.pk-btn:hover { background: #2573a8; }
+.pk-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pk-btn-secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+.pk-input, .pk-select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; font-family: inherit; }
+.pk-err { background: #fee2e2; color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+.pk-ok  { background: #dcfce7; color: var(--success); padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+/* ═══════════════════════════════════════════════════════════════════════════
+   Wave 3 governance CSS — copied VERBATIM from PROCUREMENT_PORTAL_PROTOTYPE.html.
+   Do not restyle these in place; the prototype is the source of truth.
+
+   .event-* is the D365 event stream (renderD365Status, line 8055).
+   .approver-row .ack-status is the acknowledgement column of the shared
+   purpose-and-ack widget (purposeAndAckWidget, line 1603).
+   The .image-gallery-card / .image-thumb-grid / .image-count-chip classes
+   carry no rules in the prototype either — they are structural, and the
+   gallery is styled inline. Nothing is invented here.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.event-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+.event-row:last-child { border-bottom: none; }
+.event-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-top: 6px; flex-shrink: 0; }
+.event-meta { font-size: 11px; color: var(--text-mute); }
+.approver-row .ack-status { margin-left: auto; }
+
+/* ============================ PART 7: WORKFLOW BUILDER ============================ */
+/* #wf-mermaid-container: white card, 16px padding, 8px radius, #E2E8F0 border,
+   horizontal overflow, per blueprint Part 7.2. */
+.wf-visual-card { margin-bottom: 20px; }
+#wf-mermaid-container {
+  background: #fff; padding: 16px; border-radius: 8px; border: 1px solid #E2E8F0;
+  overflow-x: auto; text-align: center; min-height: 80px;
+}
+.wf-mermaid-wrap { display: inline-block; min-width: 100%; }
+.wf-mermaid-wrap svg { max-width: none; height: auto; }
+/* The fallback is the CONTRACT, not a consolation: if Mermaid cannot load the
+   configuration must still be readable as source. */
+pre.wf-mermaid-fallback {
+  white-space: pre-wrap; text-align: left; font-size: 12px; line-height: 1.5;
+  color: #0F172A; background: #F8FAFC; border: 1px dashed #CBD5E1; border-radius: 6px;
+  padding: 12px; margin: 0;
+}
+.wf-visual-meta { font-size: 12px; color: var(--text-mute); margin: 6px 0 0; }
+#wf-visual-details > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+#wf-visual-details > summary .wf-visual-sub {
+  font-weight: 400; color: var(--text-mute); margin-left: 8px; font-size: 12px;
+}
+
+/* -- 11-column routing grid -- */
+table.wf-grid { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.wf-grid th, table.wf-grid td {
+  padding: 8px 8px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle;
+}
+table.wf-grid th {
+  background: var(--surface-2); font-weight: 600; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-mute);
+  position: sticky; top: 0; z-index: 1;
+}
+table.wf-grid td.wf-narrow { width: 1%; white-space: nowrap; }
+table.wf-grid td.wf-id { font-size: 12px; }
+table.wf-grid input[type="text"], table.wf-grid input[type="number"], table.wf-grid select {
+  min-width: 0;
+}
+table.wf-grid input.wf-cond { width: 90px; }
+table.wf-grid select.wf-actor { min-width: 130px; }
+table.wf-grid select.wf-when { min-width: 150px; }
+table.wf-grid select.wf-to { min-width: 150px; }
+.wf-move { display: flex; flex-direction: column; gap: 2px; }
+.wf-move button {
+  background: transparent; border: 1px solid var(--line); border-radius: 4px;
+  cursor: pointer; padding: 0; width: 22px; height: 18px; line-height: 1;
+  font-size: 10px; color: var(--text-mute);
+}
+.wf-move button:hover:not(:disabled) { background: var(--bg); color: var(--accent); }
+.wf-move button:disabled { opacity: 0.3; cursor: not-allowed; }
+.wf-del {
+  background: transparent; border: 1px solid transparent; color: var(--danger);
+  cursor: pointer; border-radius: 4px; padding: 2px 7px; font-size: 15px; line-height: 1;
+}
+.wf-del:hover { background: #FEE2E2; }
+.wf-dash { color: var(--text-mute); }
+
+/* -- line-rules accordion sub-row -- */
+tr.wf-rules-row > td { background: #F8FAFC; padding: 0; border-bottom: 1px solid var(--line); }
+tr.wf-rules-row details > summary {
+  cursor: pointer; padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--text);
+}
+tr.wf-rules-row details > summary .wf-rules-sub {
+  font-weight: 400; color: var(--text-mute); margin-left: 8px;
+}
+tr.wf-rules-row .wf-rules-body { padding: 0 12px 12px; }
+table.wf-rule-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.wf-rule-table th, table.wf-rule-table td {
+  padding: 5px 6px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top;
+}
+table.wf-rule-table th {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-mute); font-weight: 600;
+}
+table.wf-rule-table select.wf-cat { min-width: 140px; height: 50px; }
+table.wf-rule-table input.wf-amt { width: 90px; }
+table.wf-rule-table input.wf-reason { width: 100%; }
+.wf-rules-empty { font-size: 12px; color: var(--text-mute); padding: 4px 0 10px; }
+
+/* -- source badge: is this config actually live? -- */
+.wf-source {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  padding: 3px 8px; border-radius: 999px; font-weight: 600;
+}
+.wf-source.db { background: #DCFCE7; color: #166534; }
+.wf-source.fallback { background: #FEE2E2; color: #991B1B; }
+.wf-source.snapshot { background: #DBEAFE; color: #1E40AF; }
+
+/* -- toast (the prototype's save feedback) -- */
+.wf-toasts { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: flex; flex-direction: column; gap: 8px; }
+.wf-toast {
+  background: #0F172A; color: #fff; padding: 10px 14px; border-radius: 8px;
+  font-size: 13px; box-shadow: 0 8px 24px rgba(15,23,42,.24); max-width: 420px;
+}
+.wf-toast.err { background: #991B1B; }
+.wf-toast.warn { background: #92400E; }
+.wf-save-state { font-size: 11px; color: var(--text-mute); font-style: italic; }
+/* ═══════════════════════════════════════════════════════════════════════
+   SEARCHABLE LINE-CATEGORY COMBOBOX  (LineCategoryCombobox)
+   Used by /pr/new for the per-line routing category.
+   ═══════════════════════════════════════════════════════════════════════ */
+.lcc { position: relative; width: 100%; }
+
+.lcc-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  width: 100%; min-height: 30px; padding: 5px 8px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px;
+  font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.lcc-trigger:hover:not(:disabled) { border-color: var(--accent); }
+.lcc-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.lcc-trigger:disabled { background: var(--line-soft); color: var(--text-mute); cursor: not-allowed; }
+.lcc-trigger-label { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.lcc-trigger-name {
+  font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lcc-trigger-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px; color: var(--text-mute);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lcc-trigger-empty { color: var(--text-mute); font-style: italic; }
+.lcc-caret { color: var(--slate-soft); font-size: 10px; flex: none; }
+
+/* The open panel. Positioned over the grid, so it needs a real z-index and a
+   hard shadow — it is floating above other rows, not inline in the cell. */
+/* PORTALLED to <body> and positioned from JS, so the coordinates arrive inline.
+   `position: fixed` is the whole point: it takes the panel out of the table's
+   clipping ancestors entirely. Left/top/bottom/width/max-height are all set in
+   updatePos(); nothing positional is hard-coded here.
+   The flex column plus `min-height: 0` on the list is what lets the LIST absorb
+   whatever height is left, instead of a fixed pixel height that clips long
+   descriptions on a long row. */
+.lcc-panel {
+  position: fixed; z-index: 2000;
+  display: flex; flex-direction: column;
+  /* No width here — updatePos() sets it inline from the trigger and the
+     viewport. A CSS min-width would fight that: on a narrow viewport the inline
+     width has to shrink below 460px or the panel runs off the screen, and a
+     min-width would win and cause horizontal overflow. */
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(15,23,42,.18);
+  overflow: hidden;
+}
+.lcc-searchrow { display: flex; align-items: center; gap: 4px; padding: 6px; border-bottom: 1px solid var(--line); }
+.lcc-search {
+  flex: 1; min-width: 0; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+  font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+}
+.lcc-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.lcc-close {
+  flex: none; width: 24px; height: 24px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--slate-soft); font-size: 17px;
+  line-height: 1; cursor: pointer;
+}
+.lcc-close:hover { background: var(--line-soft); color: var(--text); }
+
+.lcc-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+
+/* NAME and DESCRIPTION are separate blocks on purpose. Running them together as
+   "Office supplies — stationery, consumables…" is exactly what made the old
+   <select> unreadable, and the description is the part that tells the requester
+   whether this is the bucket they meant. */
+/* The lookup GRID. Every row is the same two-column grid, and the header row uses
+   the identical template, so every description starts at the same x position.
+   That alignment is the whole point — it is what lets a reader pair a name with
+   its description while scanning, which the previous stacked layout could not. */
+.lcc-opt, .lcc-head {
+  display: grid;
+  grid-template-columns: minmax(132px, 38%) 1fr;
+  gap: 10px;
+  align-items: start;
+}
+.lcc-opt { padding: 6px 10px; cursor: pointer; border-top: 1px solid var(--line-soft); }
+.lcc-opt.is-cursor { background: var(--accent-soft); }
+.lcc-opt.is-selected { background: #F0FDF4; }
+.lcc-opt.is-cursor.is-selected { background: var(--accent-soft); }
+
+.lcc-head {
+  position: sticky; top: 0; z-index: 1;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-mute);
+}
+
+/* LEFT COLUMN — name over code, both left-aligned. */
+.lcc-cell-name { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.lcc-check { color: var(--success); font-weight: 700; }
+.lcc-opt-name {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  overflow-wrap: anywhere;
+}
+.lcc-opt-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; color: var(--slate-soft);
+  overflow-wrap: anywhere;
+}
+
+/* RIGHT COLUMN — the description, wrapping inside its own cell so it can never
+   bleed under the name column. */
+.lcc-cell-desc {
+  font-size: 11.5px; line-height: 1.45; color: var(--text-mute);
+  overflow-wrap: anywhere;
+}
+.lcc-no-desc { font-style: italic; color: var(--slate-soft); }
+
+/* The matched text, so it is obvious WHICH field matched — a description hit
+   looks identical to a name hit otherwise. */
+.lcc-opt mark {
+  background: #FEF08A; color: var(--text);
+  border-radius: 2px; padding: 0 1px;
+}
+.lcc-empty { padding: 14px 12px; font-size: 12.5px; color: var(--text-mute); }
+.lcc-empty-hint { margin-top: 4px; font-size: 11.5px; color: var(--slate-soft); font-style: italic; }
+
+.lcc-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; border-top: 1px solid var(--line); background: var(--surface-2);
+}
+.lcc-clear {
+  border: 0; background: transparent; color: var(--accent);
+  font: inherit; font-size: 12px; cursor: pointer; padding: 0;
+}
+.lcc-clear:hover { text-decoration: underline; }
+.lcc-count { font-size: 11px; color: var(--text-mute); }

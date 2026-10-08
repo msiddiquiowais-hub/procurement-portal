@@ -1,0 +1,11 @@
+code,name,description
+IT_HARDWARE,IT hardware,"Laptops, desktops, servers, networking equipment."
+IT_SOFTWARE,IT software,"Licensed software, SaaS subscriptions, cloud services."
+OFFICE_SUPPLIES,Office supplies,"Stationery, printer consumables, general consumables."
+WAREHOUSE_ACCESSORY,Warehouse accessory,"Docks, cables, bags, mounts -- bundled or standalone."
+MACHINERY,Machinery / plant,"Production-line machinery, tooling, heavy equipment."
+PROFESSIONAL_SERVICES,Professional services,"Consultancy, audit, legal, training."
+FACILITIES,Facilities / FM,"HVAC, plumbing, electrical, building maintenance."
+MARKETING,Marketing / branding,"Campaigns, events, collateral, signage."
+OTHER,Other,Catch-all when no category fits.
+CHEMICALS,Chemicals,"Lab reagents, solvents and consumable chemicals. EXAMPLE - delete if unused."

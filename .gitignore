@@ -1,0 +1,60 @@
+# ─── Dependencies & build output ─────────────────────────────────────────────
+node_modules/
+.next/
+dist/
+.render-build/
+*.tsbuildinfo
+coverage/
+
+# ─── Local environment & secrets ─────────────────────────────────────────────
+# `.env.example` is the committed template; every other variant is local-only.
+.env
+.env.*
+!.env.example
+*.local
+
+# ─── Runtime data ────────────────────────────────────────────────────────────
+# attachments/, documents/, outbox/ and the *.eml mail fixtures are written by
+# the app and the e2e harnesses. On the VPS they live in a Docker volume, so they
+# must never be committed.
+var/
+
+# ─── Logs & crash dumps ──────────────────────────────────────────────────────
+*.log
+*.err
+t_out.txt
+t_err.txt
+
+# ─── Screenshots & generated documents ───────────────────────────────────────
+*.png
+*.jpg
+*.pdf
+*.docx
+*.eml
+*.bak
+*.tmp
+
+# ─── One-off local probes & scratch scripts (repo root only) ─────────────────
+# These are throwaway debugging harnesses, not part of the product. The real,
+# durable end-to-end suites live in scripts/ and are committed normally.
+# Anchored with a leading slash so scripts/ and db/scripts/ are never affected.
+/.check*
+/.test*
+/.trash*
+/.smoke*
+/.pw-*
+/.db-*
+/.api-*
+/.http-*
+/.port-*
+/.launch-*
+/.restart-*
+/.rebuild-*
+/.re-*
+/.verify-*
+/.curl-*
+/.wait-*
+/.cleanup-*
+/.e2e-*
+/.browser-flow.mjs
+/._*

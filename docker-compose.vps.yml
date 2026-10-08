@@ -1,0 +1,132 @@
+# Procurement Portal — VPS test stack (Docker Compose)
+#
+# Use with:  docker compose -f docker-compose.vps.yml --env-file deploy/env.vps up -d
+#
+# Shape of the stack (IP-only access, no domain, no TLS):
+#
+#   http://<VPS_IP>:8080   web admin       (Next.js)
+#   http://<VPS_IP>:8081   onboarding      (Next.js)
+#   http://<VPS_IP>:8082   API             (NestJS)  <-- must be browser-reachable
+#
+# The API port is public on purpose, and that is a consequence of how the web
+# app is written: `NEXT_PUBLIC_API_BASE` is read by the BROWSER, not the server
+# (apps/web/lib/api.ts), and it is inlined into the bundle at BUILD time. So the
+# URL the browser calls has to be a real public address, and the API has to allow
+# those exact origins through CORS (see API_CORS_ORIGINS in deploy/env.vps).
+#
+# ── The one non-obvious requirement ──────────────────────────────────────────
+# `postgres` MUST keep `container_name: procurement-portal-db`.
+# The API's DbService spawns `docker exec -i $PG_CONTAINER psql`, and $PG_CONTAINER
+# defaults to exactly that name. Renaming the service, or switching to a random
+# generated name, silently breaks every database call at runtime while /health
+# keeps returning 200. The API service therefore also needs:
+#   * /var/run/docker.sock mounted, and
+#   * to sit on the same docker network as postgres (it does — default network).
+
+name: procurement-portal-vps
+
+services:
+  postgres:
+    # DO NOT RENAME. See note above.
+    container_name: procurement-portal-db
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-proc}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in deploy/env.vps}
+      POSTGRES_DB: ${DB_NAME:-procurementDB}
+      # Postgres refuses to initialise into a non-empty PGDATA, so point it at a
+      # subdirectory (matches db/docker/docker-compose.yml used on the laptop).
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - procurement-pgdata:/var/lib/postgresql/data
+    # Deliberately NOT published to the host. Nothing outside this network needs
+    # to reach the database; the API goes in through `docker exec`, not TCP.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-proc} -d ${DB_NAME:-procurementDB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    image: procurement-portal/api:${DEPLOY_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # --- database (used for the docker-exec psql call) ---
+      PG_CONTAINER: procurement-portal-db
+      DB_USER: ${DB_USER:-proc}
+      DB_NAME: ${DB_NAME:-procurementDB}
+      API_PORT: "3000"
+
+      # --- api behaviour ---
+      API_JWT_SECRET: ${API_JWT_SECRET:?set API_JWT_SECRET in deploy/env.vps}
+      API_JWT_TTL: ${API_JWT_TTL:-12h}
+      # Must list the exact origins a tester's browser will send. No trailing
+      # slash, no path. A mismatch here fails every API call from the web app.
+      API_CORS_ORIGINS: ${API_CORS_ORIGINS:?set API_CORS_ORIGINS in deploy/env.vps}
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:?set PUBLIC_WEB_URL in deploy/env.vps}
+
+      # --- storage roots (must be absolute in a container; there is no repo
+      #     layout to fall back to, and the adapter warns loudly if it is missing) ---
+      ATTACHMENT_STORAGE_ROOT: /data/attachments
+      ATTACHMENT_STORAGE_BUCKET: ${ATTACHMENT_STORAGE_BUCKET:-local}
+      DOCUMENT_STORAGE_ROOT: /data/documents
+      OUTBOX_ROOT: /data/outbox
+
+      # --- D365 F&O: stub keeps the test environment self-contained ---
+      D365_MODE: ${D365_MODE:-stub}
+      D365_BASE_URL: ${D365_BASE_URL:-}
+      D365_TENANT_ID: ${D365_TENANT_ID:-}
+      D365_CLIENT_ID: ${D365_CLIENT_ID:-}
+      D365_CLIENT_SECRET: ${D365_CLIENT_SECRET:-}
+      D365_COMPANY: ${D365_COMPANY:-PKE}
+
+      # Demo helper endpoints are off unless explicitly requested.
+      DEMO_HELPERS: ${DEMO_HELPERS:-0}
+    volumes:
+      # Required by DbService — see the note at the top of this file.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Attachments / documents / outbox survive image rebuilds.
+      - procurement-data:/data
+    ports:
+      - "${API_PUBLIC_PORT:-8082}:3000"
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      args:
+        # Inlined into the client bundle at build time — see note at the top.
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:?set NEXT_PUBLIC_API_BASE in deploy/env.vps}
+    image: procurement-portal/web:${DEPLOY_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:?set NEXT_PUBLIC_API_BASE in deploy/env.vps}
+    ports:
+      - "${WEB_PUBLIC_PORT:-8080}:3000"
+
+  onboarding:
+    build:
+      context: .
+      dockerfile: docker/onboarding.Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:?set NEXT_PUBLIC_API_BASE in deploy/env.vps}
+    image: procurement-portal/onboarding:${DEPLOY_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:?set NEXT_PUBLIC_API_BASE in deploy/env.vps}
+    ports:
+      - "${ONBOARDING_PUBLIC_PORT:-8081}:3000"
+
+volumes:
+  procurement-pgdata:
+  procurement-data:

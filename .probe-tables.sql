@@ -1,0 +1,2 @@
+\dt proc.*
+\dt core.*

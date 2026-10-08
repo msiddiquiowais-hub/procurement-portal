@@ -1,0 +1,118 @@
+name: Deploy to VPS
+
+# Push to `main` -> build -> deploy to the test VPS over SSH.
+#
+# ── How this works, and why ────────────────────────────────────────────────
+# The build happens on the VPS, not in this workflow. Two reasons:
+#   1. The API image copies the docker CLI and mounts /var/run/docker.sock,
+#      because DbService runs `docker exec ... psql`. That only works where the
+#      Docker daemon is — so the build has to be on the VPS.
+#   2. A self-hosted runner would need to be registered on the VPS anyway.
+# So this workflow's only jobs are: authenticate, SSH in, pull, run
+# deploy/deploy.sh, and stream the logs back into the Actions log.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   VPS_HOST         e.g. 203.0.113.10
+#   VPS_USER         e.g. deploy
+#   VPS_SSH_KEY      private key, no passphrase
+#   VPS_APP_DIR      e.g. /home/deploy/procurement-portal
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # One deploy at a time. Without this, two rapid pushes can interleave and leave
+  # half of one build running with half of the other.
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check required secrets are present
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+        run: |
+          missing=0
+          for v in VPS_HOST VPS_USER VPS_SSH_KEY VPS_APP_DIR; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Secret $v is not set."
+              missing=1
+            fi
+          done
+          [ "$missing" = "0" ] || exit 1
+
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          # The key is a secret: never leave it group/world readable.
+          chmod 600 ~/.ssh/deploy_key
+          # Pin the host key rather than disabling the check. Replace the
+          # placeholder below with the real fingerprint from the first connect:
+          #   ssh-keyscan -p 22 <VPS_HOST>   (then compare with the provider's)
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          echo "SSH key written."
+
+      - name: Deploy
+        env:
+          GIT_SHA: ${{ github.sha }}
+          # These must be in the step's env, not only in the "check secrets" step.
+          # Each `run:` block is a fresh shell, so variables set earlier are not
+          # inherited — referencing ${VPS_APP_DIR} without this expands to empty
+          # and the remote command would run `cd ''`, which succeeds and deploys
+          # nothing.
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              "${VPS_USER}@${VPS_HOST}" \
+              "cd '${VPS_APP_DIR}' && DEPLOY_TAG=\${GIT_SHA:0:7} ./deploy/deploy.sh"
+        # Fail the workflow if the remote script exits non-zero.
+
+      - name: Smoke test the deployed stack
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -e
+          # These three must all answer. /health is served by the API process; a
+          # reachable answer there does NOT prove the database path works, so
+          # also hit a real database-backed endpoint.
+          echo "API /health:"
+          curl -fsS --retry 5 --retry-delay 5 --retry-connrefused \
+               "http://${VPS_HOST}:8082/health"
+          echo ""
+          echo "Web admin:"
+          curl -fsS -o /dev/null -w 'HTTP %{http_code}\n' --retry 5 --retry-delay 5 \
+               "http://${VPS_HOST}:8080/"
+          echo "Onboarding:"
+          curl -fsS -o /dev/null -w 'HTTP %{http_code}\n' --retry 5 --retry-delay 5 \
+               "http://${VPS_HOST}:8081/"
+          echo ""
+          echo "Database-backed endpoint (proves docker exec + psql path works):"
+          curl -fsS -o /dev/null -w 'HTTP %{http_code}\n' \
+               "http://${VPS_HOST}:8082/lookups/uoms"
+
+      - name: Recent logs on failure
+        if: failure()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+              "${VPS_USER}@${VPS_HOST}" \
+              "cd '${VPS_APP_DIR}' && \
+               docker compose -f docker-compose.vps.yml --env-file deploy/env.vps \
+               logs --tail 100 api web onboarding || true"
