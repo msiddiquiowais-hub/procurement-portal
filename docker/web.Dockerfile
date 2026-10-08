@@ -58,17 +58,16 @@ COPY --from=build /repo/packages/roles/package.json ./packages/roles/package.jso
 COPY --from=build /repo/packages/roles/dist         ./packages/roles/dist
 COPY --from=build /repo/apps/web/package.json       ./apps/web/package.json
 COPY --from=build /repo/apps/web/next.config.js     ./apps/web/next.config.js
+COPY --from=build /repo/apps/web/.next              ./apps/web/.next
 
-# Copy .next WITHOUT the webpack cache: it is ~200 MB of build scratch that also
-# retains the pre-build `localhost:33001` string, which is misleading when
-# auditing a deployed image. The runtime only needs server/ and static/.
-RUN mkdir -p /repo/apps/web/.next \
- && cp -a /repo/apps/web/.next/server /repo/apps/web/.next/server \
- && cp -a /repo/apps/web/.next/static /repo/apps/web/.next/static \
- && cp -a /repo/apps/web/.next/BUILD_ID /repo/apps/web/.next/BUILD_ID \
- && for f in /repo/apps/web/.next/*.json /repo/apps/web/.next/*.js; do \
-      [ -f "$f" ] && cp -a "$f" /repo/apps/web/.next/ || true; \
-    done
+# NOTE: an earlier version tried to strip .next/cache here to shave ~200 MB off
+# the image. It was removed rather than debugged: two attempts to prune it in
+# place failed the build outright (copying .next/server into .next is a
+# copy-into-itself; the staged /tmp variant also failed), and a broken web image
+# is far worse than a large one. The whole tree is copied verbatim instead, which
+# is exactly what was verified working. If size matters later, do it by adding
+# `output: 'standalone'` to next.config.js and rebuilding — not by mutating the
+# build tree here.
 
 # The container listens on 3000; the compose file maps it to the public port.
 ENV WEB_ADMIN_PORT=3000

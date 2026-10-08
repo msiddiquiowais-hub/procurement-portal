@@ -120,8 +120,20 @@ jobs:
                "http://${VPS_HOST}:8081/"
           echo ""
           echo "Database-backed endpoint (proves docker exec + psql path works):"
-          curl -fsS -o /dev/null -w 'HTTP %{http_code}\n' \
-               "http://${VPS_HOST}:8082/lookups/uoms"
+          # /ack/resolve/:token is deliberately UNAUTHENTICATED and still issues a
+          # real query (resolveToken -> DbService -> docker exec psql). It must
+          # answer 200 with {"approver":null} for an unknown token.
+          #
+          # Do NOT substitute /lookups/* here: those sit behind JwtAuthGuard and
+          # answer 403 without a token, and `curl -f` treats that as a failure —
+          # which would report a perfectly healthy deployment as broken.
+          probe="$(curl -fsS --retry 3 --retry-delay 3 \
+                    "http://${VPS_HOST}:8082/ack/resolve/deploy-smoke-probe")"
+          echo "response: ${probe}"
+          case "$probe" in
+            *'"approver"'*) echo "Database path OK." ;;
+            *) echo "::error::Unexpected response from the DB-backed probe: ${probe}"; exit 1 ;;
+          esac
 
       - name: Recent logs on failure
         # `always() &&` keeps this running even though the steps above are gated
