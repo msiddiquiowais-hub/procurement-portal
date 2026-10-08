@@ -34,6 +34,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # ── Stand down until the VPS is actually configured ──────────────────────
+    # Until the four VPS_* secrets exist there is nothing to deploy to, so this
+    # job skips instead of failing. Without this guard every push to main showed
+    # a red X next to the commit — which reads as "the code is broken" when in
+    # fact nothing had been deployed yet.
+    #
+    # A skipped run shows as a neutral dot, not a failure. The moment the secrets
+    # are added, push-to-deploy starts working with no edit to this file.
+    if: ${{ secrets.VPS_HOST != '' && secrets.VPS_USER != '' && secrets.VPS_SSH_KEY != '' && secrets.VPS_APP_DIR != '' }}
+
     steps:
       - name: Check required secrets are present
         env:
