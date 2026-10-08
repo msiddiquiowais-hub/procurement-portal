@@ -26,6 +26,9 @@ COPY packages/workflow-engine/package.json packages/workflow-engine/package.json
 COPY packages/d365-client/package.json     packages/d365-client/package.json
 RUN npm ci
 
+# tsconfig.base.json is required: apps/onboarding/tsconfig.json extends it, and
+# without it `next build` fails with TS5083 before compiling anything.
+COPY tsconfig.base.json ./
 COPY apps/onboarding ./apps/onboarding
 RUN npm run build -w apps/onboarding
 

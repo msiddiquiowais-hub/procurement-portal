@@ -13,6 +13,10 @@ coverage/
 !.env.example
 *.local
 
+# The VPS config holds DB_PASSWORD + API_JWT_SECRET in plain text. It is created
+# on the server from deploy/env.vps.example and must never be committed.
+deploy/env.vps
+
 # ─── Runtime data ────────────────────────────────────────────────────────────
 # attachments/, documents/, outbox/ and the *.eml mail fixtures are written by
 # the app and the e2e harnesses. On the VPS they live in a Docker volume, so they

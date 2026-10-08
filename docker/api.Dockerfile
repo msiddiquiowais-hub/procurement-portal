@@ -46,8 +46,15 @@ COPY apps/api ./apps/api
 # Order matters. The API resolves @procurement/* through the node_modules
 # symlinks that point at packages/<name>/dist, so the libraries must already be
 # compiled or `tsc` cannot find their type declarations.
+#
+# @procurement/roles is NOT listed in apps/api/package.json dependencies, but the
+# API imports `roleAllowed` from it in ~18 services. It compiled here only
+# because the whole workspace tree is present in the build stage — which meant
+# the missing dependency stayed invisible until runtime, where every one of
+# those services failed to load. All three workspace packages must be built.
 RUN npm run build -w packages/workflow-engine \
  && npm run build -w packages/d365-client \
+ && npm run build -w packages/roles \
  && npm run build -w apps/api
 
 
@@ -77,6 +84,11 @@ COPY --from=build /repo/packages/workflow-engine/package.json ./packages/workflo
 COPY --from=build /repo/packages/workflow-engine/dist         ./packages/workflow-engine/dist
 COPY --from=build /repo/packages/d365-client/package.json     ./packages/d365-client/package.json
 COPY --from=build /repo/packages/d365-client/dist             ./packages/d365-client/dist
+# @procurement/roles is imported by ~18 API services but is missing from
+# apps/api/package.json's dependency list. It must be present at runtime or every
+# one of those services throws MODULE_NOT_FOUND on first use.
+COPY --from=build /repo/packages/roles/package.json           ./packages/roles/package.json
+COPY --from=build /repo/packages/roles/dist                   ./packages/roles/dist
 COPY --from=build /repo/apps/api/package.json                 ./apps/api/package.json
 COPY --from=build /repo/apps/api/dist                         ./apps/api/dist
 

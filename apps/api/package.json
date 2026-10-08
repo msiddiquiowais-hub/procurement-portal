@@ -20,7 +20,8 @@
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.1",
     "@procurement/workflow-engine": "0.1.0",
-    "@procurement/d365-client": "0.1.0"
+    "@procurement/d365-client": "0.1.0",
+    "@procurement/roles": "0.1.0"
   },
   "devDependencies": {
     "typescript": "5.5.4",

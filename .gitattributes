@@ -1,0 +1,29 @@
+# Normalize line endings so shell scripts keep LF on the VPS.
+#
+# Without this, git's Windows default (core.autocrlf=true) rewrites
+# deploy/migrate.sh and deploy/deploy.sh to CRLF in the working tree. Bash then
+# fails on the VPS with "\r: command not found" — and because those scripts run
+# inside the deploy itself, the failure surfaces as a broken GitHub Action
+# rather than anything that points at line endings.
+#
+# Shell scripts must be LF in the repository AND in the working tree.
+* text=auto
+
+*.sh   text eol=lf
+Dockerfile     text eol=lf
+*.Dockerfile   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Source files: keep CRLF out of the repo, but don't fight the Windows editor.
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.sql   text eol=lf
+*.md    text eol=lf
+*.py    text eol=lf
+*.ps1   text eol=crlf
+*.docx  binary
+*.png   binary

@@ -57,8 +57,18 @@ COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/packages/roles/package.json ./packages/roles/package.json
 COPY --from=build /repo/packages/roles/dist         ./packages/roles/dist
 COPY --from=build /repo/apps/web/package.json       ./apps/web/package.json
-COPY --from=build /repo/apps/web/.next              ./apps/web/.next
 COPY --from=build /repo/apps/web/next.config.js     ./apps/web/next.config.js
+
+# Copy .next WITHOUT the webpack cache: it is ~200 MB of build scratch that also
+# retains the pre-build `localhost:33001` string, which is misleading when
+# auditing a deployed image. The runtime only needs server/ and static/.
+RUN mkdir -p /repo/apps/web/.next \
+ && cp -a /repo/apps/web/.next/server /repo/apps/web/.next/server \
+ && cp -a /repo/apps/web/.next/static /repo/apps/web/.next/static \
+ && cp -a /repo/apps/web/.next/BUILD_ID /repo/apps/web/.next/BUILD_ID \
+ && for f in /repo/apps/web/.next/*.json /repo/apps/web/.next/*.js; do \
+      [ -f "$f" ] && cp -a "$f" /repo/apps/web/.next/ || true; \
+    done
 
 # The container listens on 3000; the compose file maps it to the public port.
 ENV WEB_ADMIN_PORT=3000
