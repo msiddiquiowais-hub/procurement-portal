@@ -157,8 +157,16 @@ const after = await api(`/pr/${prId}`, { token });
 // stage. What this gate actually checks is that ACKNOWLEDGEMENTS left the stage
 // alone, so it compares against the stage the PR was created into.
 ok(after.data?.status === 'IN_HOD_REVIEW', 'PR status unchanged by acknowledgements', after.data?.status);
+// The PR sits in IN_HOD_REVIEW, so the gate that fires is hod_review and only a
+// HOD may push it out. advance() now enforces that (see authorizeAdvance), so
+// this call authenticates as the HOD. It previously passed the REQUESTER token,
+// which only ever worked because the endpoint had no role check.
+const hodLogin = await api('/auth/login', {
+  method: 'POST', body: { email: 'hod.sales@pakboxes.pk', password: 'demo' },
+});
+ok(Boolean(hodLogin.data?.token), 'login as hod.sales@pakboxes.pk', hodLogin.status);
 const adv = await api(`/pr/${prId}/advance`, {
-  method: 'POST', token: login.data.token,
+  method: 'POST', token: hodLogin.data?.token,
   body: { lineDecisions: { 0: 'approved' }, reason: 'ack smoke' },
 });
 ok([200, 201].includes(adv.status), 'PR still advances normally', adv.status);

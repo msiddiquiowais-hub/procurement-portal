@@ -50,6 +50,25 @@ if (![200, 201].includes(login.status) || !login.data?.token) {
 const token = login.data.token;
 console.log('  PASS  login as requester@pakboxes.pk\n');
 
+// ── 1b · the HOD token, for every advance ──────────────────────────────────
+//
+// The advances below sit at the HOD gate, and `advance()` now refuses any
+// caller who does not own the matched step. This file used to advance with the
+// REQUESTER token throughout — which only worked because advance() had no role
+// check at all. The comment at section 4 already said "advance as the HOD" while
+// passing the requester's token, so this is the test being corrected to what it
+// always claimed to do, not a workaround.
+const hodLogin = await api('/auth/login', {
+  method: 'POST',
+  body: { email: 'hod.sales@pakboxes.pk', password: 'demo' },
+});
+if (![200, 201].includes(hodLogin.status) || !hodLogin.data?.token) {
+  console.log('  FAIL  HOD login', hodLogin.status, hodLogin.data);
+  process.exit(1);
+}
+const hodToken = hodLogin.data.token;
+console.log('  PASS  login as hod.sales@pakboxes.pk (advances need it)\n');
+
 // ── 2 · lookups ───────────────────────────────────────────────────────────
 const ccs = await api('/lookups/cost-centers', { token });
 const costCenterId = ccs.data?.[0]?.id;
@@ -86,7 +105,7 @@ console.log(`        ${created.data.prNumber}  total=${created.data.estimatedAmo
 // ── 4 · advance as the HOD ────────────────────────────────────────────────
 const advanced = await api(`/pr/${prId}/advance`, {
   method: 'POST',
-  token,
+  token: hodToken,
   body: { reason: 'E2E: HOD approves all lines' },
 });
 ok(advanced.status === 200 || advanced.status === 201, 'advance accepted', advanced.data);
@@ -154,7 +173,7 @@ const single = await api('/pr', {
   },
 });
 const singleAdv = await api(`/pr/${single.data.id}/advance`, {
-  method: 'POST', token, body: { reason: 'E2E: single-destination control' },
+  method: 'POST', token: hodToken, body: { reason: 'E2E: single-destination control' },
 });
 ok(singleAdv.data?.split !== true, 'two high-value IT lines do not split', singleAdv.data);
 ok(singleAdv.data?.nextStage === 'IN_IT_REVIEW', 'both-IT PR routes whole to IN_IT_REVIEW', singleAdv.data?.nextStage);
@@ -172,7 +191,7 @@ const fallthrough = await api('/pr', {
     ],
   },
 });
-const ftAdv = await api(`/pr/${fallthrough.data.id}/advance`, { method: 'POST', token, body: {} });
+const ftAdv = await api(`/pr/${fallthrough.data.id}/advance`, { method: 'POST', token: hodToken, body: {} });
 ok(ftAdv.data?.split !== true, 'unmatched line does not split', ftAdv.data);
 ok(ftAdv.data?.nextStage === 'IN_PROCUREMENT_REVIEW', 'unmatched line falls through to the step default', ftAdv.data?.nextStage);
 ok(ftAdv.data?.lineRoutingApplied === false, 'lineRoutingApplied false on fallthrough', ftAdv.data?.lineRoutingApplied);
@@ -190,7 +209,7 @@ const rej = await api('/pr', {
   },
 });
 const rejAdv = await api(`/pr/${rej.data.id}/advance`, {
-  method: 'POST', token,
+  method: 'POST', token: hodToken,
   body: { lineDecisions: { 0: 'approved', 1: 'rejected' }, reason: 'E2E: warehouse line rejected' },
 });
 ok(rejAdv.data?.split !== true, 'rejecting the warehouse line prevents a split', rejAdv.data);

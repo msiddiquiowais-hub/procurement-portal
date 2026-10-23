@@ -15,6 +15,7 @@
 
 import { spawnSync } from 'child_process';
 import { issueWithRoster } from './_rfq_roster.mjs';
+import { quoteBody } from './_quote_helpers.mjs';
 
 const API = process.env.API_BASE || 'http://127.0.0.1:33001';
 
@@ -84,16 +85,17 @@ async function fixture(title, unitPriceEst) {
   return id;
 }
 
-async function quote(rfqId, vendorId, o) {
+async function quote(rfqId, prId, vendorId, o) {
   return api(`/rfq/${rfqId}/quotations`, {
     method: 'POST', token: proc,
-    body: {
-      vendorId, quoteMode: 'per_line', currency: 'PKR', subtotal: o.unitPrice,
-      taxPercent: 0, freight: 0, leadTimeDays: o.leadTimeDays,
-      warrantyMonths: o.warrantyMonths, validityDays: 30, taxesIncluded: false,
-      paymentTerms: '30 days net', notes: 'Quoted.',
-      lines: [{ rfqLineNo: 1, unitPrice: o.unitPrice }],
-    },
+    body: await quoteBody(prId, proc, vendorId,
+      [{ rfqLineNo: 1, unitPrice: o.unitPrice }],
+      {
+        currency: 'PKR', subtotal: o.unitPrice,
+        taxPercent: 0, freight: 0, leadTimeDays: o.leadTimeDays,
+        warrantyMonths: o.warrantyMonths, validityDays: 30, taxesIncluded: false,
+        paymentTerms: '30 days net', notes: 'Quoted.',
+      }),
   });
 }
 
@@ -114,7 +116,7 @@ async function toPackLocked(title) {
     { unitPrice: 34_000, leadTimeDays: 30, warrantyMonths: 12 },
   ];
   for (let i = 0; i < Math.min(3, roster.length); i++) {
-    await quote(rfqId, roster[i].vendor_id, offers[i]);
+    await quote(rfqId, prId, roster[i].vendor_id, offers[i]);
   }
   const gen = await api(`/pr/${prId}/cs`, { method: 'POST', token: csUser, body: {} });
   if (gen.status >= 400 || !gen.data?.cs) {

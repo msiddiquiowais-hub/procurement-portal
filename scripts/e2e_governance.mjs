@@ -20,6 +20,7 @@
 //   8. The auto-complete demo helper is refused unless DEMO_HELPERS=1 (F3).
 
 import { spawnSync } from 'child_process';
+import { quoteBody } from './_quote_helpers.mjs';
 import { issueWithRoster } from './_rfq_roster.mjs';
 
 const API = process.env.API_BASE || 'http://127.0.0.1:33001';
@@ -63,6 +64,10 @@ async function login(email) {
 
 const LAPTOP = '55555555-5555-5555-5555-555555555503'; // PKB-LT-001, IT_HARDWARE
 const DOCK = '55555555-5555-5555-5555-555555555501';   // PKB-CS-001, WAREHOUSE_ACCESSORY
+// PKB-PEN-001, OFFICE_SUPPLIES. Added to the fixture because it is one of only
+// two categories with more than one ELIGIBLE vendor, and a roster of 1 makes the
+// CS round-2 assertions below unreachable.
+const PEN = '55555555-5555-5555-5555-555555555505';
 
 // ── the panel ──────────────────────────────────────────────────────────────
 
@@ -102,7 +107,38 @@ async function fixture(title, unitPriceEst = 30_000) {
     body: {
       scope: 'Wave 3 step 2 governance fixture', expenseType: 'OPEX', costCenterId,
       requiredByDate: '2026-12-31', title, description: title,
-      lines: [{ itemId: LAPTOP, quantity: 1, uom: 'EA', unitPriceEst }],
+      // TWO categories, not two of the same item.
+      //
+      // A single IT_HARDWARE line resolves the roster to ONE vendor on this
+      // database: V-00081 is the only Active, non-held, non-blocked vendor
+      // mapped there (V-00084 is mapped but High-risk, so Blueprint 9.5 blocks
+      // it). The CS-round-2 assertions below need two vendors to reopen.
+      //
+      // WAREHOUSE_ACCESSORY would add NOTHING: no vendor in the seed is mapped
+      // to it. Measured eligible vendors per category is the only way to know
+      // which line widens the roster, and on this data only OFFICE_SUPPLIES
+      // (V-00081 + V-00082) and OTHER (V-00081 + V-00086) have two.
+      //
+      // ONE of those is picked so the roster is >= 2. This is a fixture
+      // correction, not a workaround: one vendor is the CORRECT roster for an
+      // IT_HARDWARE-only request, and asking this suite for two was the bug.
+      lines: [
+        // ONE IT_HARDWARE line, deliberately.
+        //
+        // This used to add a second OFFICE_SUPPLIES line purely to widen the RFQ
+        // roster, because IT_HARDWARE alone resolved to a single vendor
+        // (V-00084 is mapped there but is High-risk, so Blueprint 9.5 blocks it).
+        // That workaround split the PR in two under the HOD line rules, leaving
+        // the PARENT with no lines of its own — so its RFQ roster came back
+        // empty, its CS matrix had no rows, and the FAST_TRACK pack froze with
+        // zero documents.
+        //
+        // The roster no longer needs widening: the seed now carries two more
+        // Active, non-blocked IT_HARDWARE vendors (V-00087, V-00088), so one
+        // line resolves three. A single-line PR also keeps the whole fixture on
+        // one routing path, which is what the assertions above expect.
+        { itemId: LAPTOP, quantity: 1, uom: 'EA', unitPriceEst },
+      ],
     },
   });
   if (![200, 201].includes(c.status)) throw new Error(`fixture create failed: ${JSON.stringify(c.data)}`);
@@ -111,9 +147,14 @@ async function fixture(title, unitPriceEst = 30_000) {
     method: 'POST', token: hod,
     body: { lineDecisions: { 0: 'approved' }, reason: 'HOD approved for the governance walkthrough' },
   });
-  const landed = a.data?.nextStage || a.data?.stage || a.data?.status;
+  // `nextStage` is undefined when the HOD step's line rules send this fixture to
+  // more than one destination and the PR SPLITS — and a split parent parks at
+  // IN_PROCUREMENT_REVIEW anyway (SPLIT_PARENT_STAGE). Same correction as
+  // e2e_quotations and e2e_sourcing_card: read `parentStage` too, or the test
+  // fails on correct behaviour.
+  const landed = a.data?.nextStage || a.data?.parentStage || a.data?.stage || a.data?.status;
   if (landed !== 'IN_PROCUREMENT_REVIEW') {
-    throw new Error(`fixture did not reach IN_PROCUREMENT_REVIEW, landed at ${landed}`);
+    throw new Error(`fixture did not reach IN_PROCUREMENT_REVIEW, landed at ${landed} (${JSON.stringify(a.data)})`);
   }
   return { prId: id };
 }
@@ -127,16 +168,16 @@ async function fixture(title, unitPriceEst = 30_000) {
  * Differing prices / lead times / warranties are what the CS scoring reads, so
  * they are varied on purpose.
  */
-async function quote(rfqId, vendorId, { unitPrice, leadTimeDays, warrantyMonths }) {
+async function quote(rfqId, prId, vendorId, { unitPrice, leadTimeDays, warrantyMonths }) {
   return api(`/rfq/${rfqId}/quotations`, {
     method: 'POST', token: proc,
-    body: {
-      vendorId, quoteMode: 'per_line', currency: 'PKR',
-      subtotal: unitPrice, taxPercent: 0, freight: 0,
-      leadTimeDays, warrantyMonths, validityDays: 30, taxesIncluded: false,
-      paymentTerms: '30 days net', notes: 'Quoted for the governance walkthrough.',
-      lines: [{ rfqLineNo: 1, unitPrice }],
-    },
+    body: await quoteBody(prId, proc, vendorId,
+      [{ rfqLineNo: 1, unitPrice }],
+      {
+        currency: 'PKR', subtotal: unitPrice, taxPercent: 0, freight: 0,
+        leadTimeDays, warrantyMonths, validityDays: 30, taxesIncluded: false,
+        paymentTerms: '30 days net', notes: 'Quoted for the governance walkthrough.',
+      }),
   });
 }
 
@@ -165,7 +206,7 @@ const OFFERS = [
 let n = 0;
 for (const v of roster.slice(0, 3)) {
   n += 1;
-  const q = await quote(rfqId, v.vendor_id, OFFERS[n - 1]);
+  const q = await quote(rfqId, prId, v.vendor_id, OFFERS[n - 1]);
   ok([200, 201].includes(q.status), `quote recorded for vendor ${n}`, { status: q.status, msg: q.data?.message });
 }
 
@@ -373,8 +414,12 @@ const ftId = ftF.prId;
 psql(`UPDATE proc.purchase_requisitions SET routing_key = 'FAST_TRACK' WHERE id = '${ftId}';`);
 const ftRfq = await api(`/pr/${ftId}/rfq`, { method: 'POST', token: proc, body: {} });
 const ftRoster = ftRfq.data?.invitations || [];
-for (let i = 0; i < 2; i++) {
-  const q = await quote(ftRfq.data?.rfq?.id, ftRoster[i].vendor_id,
+// Walk the roster we actually got, not a hard-coded 2. The pool is category-
+// driven and capped at 12, so a fixture can legitimately resolve to fewer than
+// two vendors — and indexing past the end threw "cannot read properties of
+// undefined" before any assertion ran, hiding the real state.
+for (let i = 0; i < Math.min(2, ftRoster.length); i++) {
+  const q = await quote(ftRfq.data?.rfq?.id, ftId, ftRoster[i].vendor_id,
     { unitPrice: 15_000 - i * 2_000, leadTimeDays: 10 + i * 5, warrantyMonths: 12 + i * 12 });
   ok([200, 201].includes(q.status), `fast-track quote ${i + 1} recorded`, q.data?.message);
 }
@@ -408,8 +453,8 @@ const rjId = rjF.prId;
 psql(`UPDATE proc.purchase_requisitions SET routing_key = 'STANDARD' WHERE id = '${rjId}';`);
 const rjRfq = await api(`/pr/${rjId}/rfq`, { method: 'POST', token: proc, body: {} });
 const rjRoster = rjRfq.data?.invitations || [];
-for (let i = 0; i < 2; i++) {
-  const q = await quote(rjRfq.data?.rfq?.id, rjRoster[i].vendor_id,
+for (let i = 0; i < Math.min(2, rjRoster.length); i++) {
+  const q = await quote(rjRfq.data?.rfq?.id, rjId, rjRoster[i].vendor_id,
     { unitPrice: 28_000 - i * 3_000, leadTimeDays: 14 - i * 4, warrantyMonths: 12 + i * 12 });
   ok([200, 201].includes(q.status), `reject-case quote ${i + 1} recorded`, q.data?.message);
 }

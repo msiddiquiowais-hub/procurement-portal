@@ -20,6 +20,7 @@
 //   8. Compliance is never a fabricated pass (D5).
 
 import { spawnSync } from 'child_process';
+import { quoteBody } from './_quote_helpers.mjs';
 import { issueWithRoster } from './_rfq_roster.mjs';
 
 const API = process.env.API_BASE || 'http://127.0.0.1:33001';
@@ -105,9 +106,11 @@ async function fixture(title, bids) {
     const [amount, lead, warranty] = bids[i];
     const r = await api(`/rfq/${rfqId}/quotations`, {
       method: 'POST', token: procurement,
-      body: { vendorId: invites[i].vendor_id, totalAmount: amount, quoteMode: 'total',
-              leadTimeDays: lead, warrantyMonths: warranty,
-              paymentTerms: '30 days net' },
+      body: await quoteBody(prId, procurement, invites[i].vendor_id, null, {
+        quoteMode: 'total', totalAmount: amount,
+        leadTimeDays: lead, warrantyMonths: warranty,
+        paymentTerms: '30 days net',
+      }),
     });
     if (r.status >= 400) throw new Error(`quote ${i} failed: ${JSON.stringify(r.data)}`);
   }

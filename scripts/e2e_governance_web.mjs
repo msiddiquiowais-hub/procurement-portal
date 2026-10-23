@@ -18,6 +18,7 @@
 //      shows as an em-dash, and a skipped pack document shows no hash.
 
 import { spawnSync } from 'child_process';
+import { quoteBody } from './_quote_helpers.mjs';
 import { readFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 
@@ -55,6 +56,7 @@ const login = async (email) =>
   (await api('/auth/login', { method: 'POST', body: { email, password: 'demo' } })).data?.token;
 
 const LAPTOP = '55555555-5555-5555-5555-555555555503';
+const PEN = '55555555-5555-5555-5555-555555555505'; // PKB-PEN-001, OFFICE_SUPPLIES
 
 const requester = await login('requester@pakboxes.pk');
 const hod = await login('hod.sales@pakboxes.pk');
@@ -161,12 +163,20 @@ const created = await api('/pr', {
     scope: 'Wave 3 web smoke', expenseType: 'OPEX', costCenterId: ccs.data?.[0]?.id,
     requiredByDate: '2026-12-31', title: 'Governance web smoke',
     description: 'Drives the five governance screens.',
-    lines: [{ itemId: LAPTOP, quantity: 1, uom: 'EA', unitPriceEst: 30_000 }],
+    // Two categories, because a laptop-only PR resolves the roster to ONE
+    // eligible vendor (V-00081 — V-00084 is IT_HARDWARE-mapped but High-risk and
+    // so blocked), and this suite quotes three vendors. OFFICE_SUPPLIES is one of
+    // only two categories with 2+ eligible vendors on this data.
+    lines: [
+      { itemId: LAPTOP, quantity: 1, uom: 'EA', unitPriceEst: 30_000 },
+      { itemId: PEN, quantity: 1, uom: 'EA', unitPriceEst: 3_000 },
+    ],
   },
 });
 const prId = created.data.id;
 const adv = await api(`/pr/${prId}/advance`, {
-  method: 'POST', token: hod, body: { lineDecisions: { 0: 'approved' }, reason: 'HOD approved' },
+  method: 'POST', token: hod,
+  body: { lineDecisions: { 0: 'approved', 1: 'approved' }, reason: 'HOD approved' },
 });
 ok(adv.data?.nextStage === 'IN_PROCUREMENT_REVIEW', 'PR reached procurement review', adv.data?.nextStage);
 psql(`UPDATE proc.purchase_requisitions SET routing_key = 'STANDARD' WHERE id = '${prId}';`);
@@ -182,16 +192,19 @@ const offers = [
   { unitPrice: 31_000, leadTimeDays: 10, warrantyMonths: 24 },
   { unitPrice: 34_000, leadTimeDays: 30, warrantyMonths: 12 },
 ];
-for (let i = 0; i < 3; i++) {
+// Walk the roster actually resolved, not a hard-coded 3 — the pool is
+// category-driven, so a fixture can legitimately yield fewer than three and
+// indexing past the end would throw instead of asserting.
+for (let i = 0; i < Math.min(3, roster.length); i++) {
   await api(`/rfq/${rfqId}/quotations`, {
     method: 'POST', token: proc,
-    body: {
-      vendorId: roster[i].vendor_id, quoteMode: 'per_line', currency: 'PKR',
-      subtotal: offers[i].unitPrice, taxPercent: 0, freight: 0,
-      leadTimeDays: offers[i].leadTimeDays, warrantyMonths: offers[i].warrantyMonths,
-      validityDays: 30, taxesIncluded: false, paymentTerms: '30 days net', notes: 'Quoted.',
-      lines: [{ rfqLineNo: 1, unitPrice: offers[i].unitPrice }],
-    },
+    body: await quoteBody(prId, proc, roster[i].vendor_id,
+      [{ rfqLineNo: 1, unitPrice: offers[i].unitPrice }],
+      {
+        currency: 'PKR', subtotal: offers[i].unitPrice, taxPercent: 0, freight: 0,
+        leadTimeDays: offers[i].leadTimeDays, warrantyMonths: offers[i].warrantyMonths,
+        validityDays: 30, taxesIncluded: false, paymentTerms: '30 days net', notes: 'Quoted.',
+      }),
   });
 }
 const gen = await api(`/pr/${prId}/cs`, { method: 'POST', token: csUser, body: {} });

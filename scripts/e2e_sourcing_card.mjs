@@ -1,5 +1,7 @@
 // Wave 2 step 3 — GET /pr/:id/sourcing.
 //
+import { quoteBody } from './_quote_helpers.mjs';
+
 //   node scripts/e2e_sourcing_card.mjs
 //
 // Requires: Postgres on 55432, the API on 33001, migrations 025 + 026 applied.
@@ -70,7 +72,17 @@ async function prInProcurementReview(title, lines) {
     method: 'POST', token: hod,
     body: { lineDecisions: Object.fromEntries(lines.map((_, i) => [i, 'approved'])), reason: 'step 3' },
   });
-  if (a.data?.nextStage !== 'IN_PROCUREMENT_REVIEW') {
+  // This fixture deliberately spans TWO categories (IT_HARDWARE + OFFICE_SUPPLIES),
+// and the HOD step's line rules route those to two different destinations, so
+// the PR SPLITS rather than transitioning. The parent still parks at
+// IN_PROCUREMENT_REVIEW — that is SPLIT_PARENT_STAGE in the engine, the same
+// place the prototype leaves a split parent. So "did it reach procurement
+// review" is answered by `parentStage` on a split, `nextStage` otherwise.
+// Asserting only nextStage made this test fail on correct behaviour.
+const parkedAtProcurement =
+  a.data?.nextStage === 'IN_PROCUREMENT_REVIEW'
+  || a.data?.parentStage === 'IN_PROCUREMENT_REVIEW';
+if (!parkedAtProcurement) {
     throw new Error(`fixture PR did not reach procurement review: ${JSON.stringify(a.data)}`);
   }
   return c.data.id;
@@ -113,14 +125,24 @@ ok(unknown.status === 404, 'an unknown PR is a 404', unknown.status);
 // ── 2 · after issuing ──────────────────────────────────────────────────────
 console.log('\n--- after issuing an RFQ: the _lightProcurement shape ---');
 
+// Two categories, because a laptop-only PR resolves the roster to ONE eligible
+// vendor on this database (V-00081; V-00084 is IT_HARDWARE-mapped but High-risk
+// and therefore blocked). OFFICE_SUPPLIES brings V-00082 in, which is what makes
+// a multi-vendor roster reachable for this fixture. One vendor is the CORRECT
+// roster for an IT_HARDWARE-only request.
 const livePr = await prInProcurementReview('Sourcing payload fixture', [
   { itemId: LAPTOP, quantity: 2, uom: 'EA', unitPriceEst: 45000 },
+  { itemId: PEN, quantity: 1, uom: 'BOX', unitPriceEst: 45000 },
 ]);
 const issued = await api(`/pr/${livePr}/rfq`, { method: 'POST', token: procurement, body: {} });
 ok([200, 201].includes(issued.status), 'RFQ issued', issued.data?.message);
 const invites = issued.data?.invitations || [];
-if (invites.length !== 3) {
-  console.log('\n  ABORT  fixture did not produce a 3-vendor RFQ.');
+// The assertions below check the roster SHAPE (every invitee stamped, listed,
+// counted) rather than a specific vendor count, so this suite needs at least 2
+// and no longer demands the prototype's fixed 3 — the pool is category-driven and
+// a seed state legitimately resolves to fewer.
+if (invites.length < 2) {
+  console.log(`\n  ABORT  fixture resolved ${invites.length} vendor(s); this suite needs 2.`);
   console.log(`\n${pass} passed, ${fail} failed\n`);
   process.exit(1);
 }
@@ -132,11 +154,15 @@ const proc = s.data?.procurement || {};
 ok(proc.rfq && typeof proc.rfq === 'object', 'procurement.rfq is an object', typeof proc.rfq);
 ok(proc.rfq?.id === issued.data.rfq.rfq_number, 'rfq.id is the human-readable RFQ number', proc.rfq?.id);
 ok(proc.rfq?.rfq_id === issued.data.rfq.id, 'rfq.rfq_id is the internal uuid, kept separately');
-ok(Array.isArray(proc.rfq?.vendorIds) && proc.rfq.vendorIds.length === 3,
-  'rfq.vendorIds has the 3 invitees', proc.rfq?.vendorIds?.length);
-ok(Object.keys(proc.rfq?.issuedAtByVendor || {}).length === 3,
+// Counted against the roster we ACTUALLY got, not a literal 3. These assert
+// the payload's internal consistency — every invitee listed and stamped — which
+// is the property that matters and is independent of how many vendors the
+// category rules resolved.
+ok(Array.isArray(proc.rfq?.vendorIds) && proc.rfq.vendorIds.length === invites.length,
+  'rfq.vendorIds lists every invitee', { got: proc.rfq?.vendorIds?.length, want: invites.length });
+ok(Object.keys(proc.rfq?.issuedAtByVendor || {}).length === invites.length,
   'rfq.issuedAtByVendor is stamped for every vendor (prototype lines 4083-4092)',
-  Object.keys(proc.rfq?.issuedAtByVendor || {}));
+  { got: Object.keys(proc.rfq?.issuedAtByVendor || {}).length, want: invites.length });
 ok(Object.values(proc.rfq?.issuedAtByVendor || {}).every(Boolean),
   'every per-vendor issued-at is populated, not an empty string');
 ok(Boolean(proc.rfq?.issuedAt), 'rfq.issuedAt is set at the RFQ level');
@@ -148,9 +174,11 @@ ok(proc.winner === null, 'winner is null before the CS lock');
 
 ok(s.data?.sub_status?.label === 'RFQ issued, awaiting quotes',
   "sub-status rung 1 is the prototype's own words", s.data?.sub_status);
-ok(Array.isArray(s.data?.roster) && s.data.roster.length === 3, 'roster carries the 3 invitees');
+ok(Array.isArray(s.data?.roster) && s.data.roster.length === invites.length,
+  'roster carries every invitee', { got: s.data?.roster?.length, want: invites.length });
 ok(s.data?.roster?.every(r => r.badge?.label === 'Awaiting quote'), 'every badge reads "Awaiting quote"');
-ok(s.data?.roster_tally?.pending === 3, 'the tally reports 3 pending', s.data?.roster_tally);
+ok(s.data?.roster_tally?.pending === invites.length,
+  'the tally counts every invitee as pending', s.data?.roster_tally);
 
 // ── 3 · with quotes in: the ladder climbs, totals are real ──────────────────
 console.log('\n--- with quotes: rung 2, and REAL totals ---');
@@ -158,12 +186,13 @@ console.log('\n--- with quotes: rung 2, and REAL totals ---');
 const [v1, v2] = invites;
 await api(`/rfq/${issued.data.rfq.id}/quotations`, {
   method: 'POST', token: procurement,
-  body: { vendorId: v1.vendor_id, quoteMode: 'per_line', paymentTerms: '30 days net',
-          lines: [{ rfqLineNo: 1, unitPrice: 43000 }] },
+  body: await quoteBody(livePr, procurement, v1.vendor_id,
+    [{ rfqLineNo: 1, unitPrice: 43000 }], { paymentTerms: '30 days net' }),
 });
 await api(`/rfq/${issued.data.rfq.id}/quotations`, {
   method: 'POST', token: procurement,
-  body: { vendorId: v2.vendor_id, totalAmount: 91000, quoteMode: 'total', leadTimeDays: 10 },
+  body: await quoteBody(livePr, procurement, v2.vendor_id, null,
+    { totalAmount: 91000, quoteMode: 'total', leadTimeDays: 10 }),
 });
 
 const s2 = await api(`/pr/${livePr}/sourcing`, { token: procurement });
@@ -193,8 +222,9 @@ ok(totalSum === 177000, 'the two totals reconcile against the DB values', { tota
 // ── 4 · one call, both cards ───────────────────────────────────────────────
 console.log('\n--- one response serves both cards ---');
 
-ok(Array.isArray(s2.data?.roster) && s2.data.roster.length === 3,
-  'the same response carries the roster the roster card needs');
+ok(Array.isArray(s2.data?.roster) && s2.data.roster.length === invites.length,
+  'the same response carries the roster the roster card needs',
+  { got: s2.data?.roster?.length, want: invites.length });
 ok(s2.data?.roster?.every(r => Array.isArray(r.versions)),
   'each roster row carries its version chain for the Versions Panel');
 const rosterQuoteCount = s2.data.roster.filter(r => r.versions.some(v => v.state === 'Submitted')).length;
