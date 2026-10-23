@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { ReactNode, useEffect, useState } from 'react';
 import { useSession } from '../lib/session';
+import CardCollapse from './CardCollapse';
 import {
   ROLE_LABELS,
   navFor,
@@ -84,6 +85,19 @@ const ROUTES: Record<string, string> = {
   vendors: '/vendors',
   'vendor-detail': '/vendors',
   'vendor-risk': '/vendor-risk',
+  // Wave 2 sourcing continued. `cs` — the Comparative Statement — acts on ONE
+  // PR (it scores that PR's live quotes), so the nav entry lands on the
+  // approvals queue where a role sees what is waiting for it. Same compromise
+  // `pr-review` and `rfq-detail` already make. The screen itself is `/cs/[id]`,
+  // reached directly from the RFQ screen's "Open the Comparative Statement" and
+  // from the PR's own stage rail.
+  //
+  // This entry was MISSING, which is why the sidebar rendered "Comparative Stmt"
+  // greyed out behind a padlock: `NavRow` locks any screen with no route here
+  // (`!href`), on the assumption that an unrouted screen was never ported. The
+  // screen had been fully built — backend, schema, scoring and page — while the
+  // nav still carried the "not yet ported" claim, so the UI contradicted itself.
+  cs: '/approvals',
   login: '/',
   'vendor-onboard-public': '/onboarding',
 };
@@ -186,6 +200,7 @@ export default function Shell({ children, title, subtitle, screenId, preTitle, a
 
   return (
     <div className="app">
+      <CardCollapse />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-logo">P</div>

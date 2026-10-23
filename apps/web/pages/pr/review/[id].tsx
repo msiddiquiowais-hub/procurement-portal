@@ -111,6 +111,20 @@ const canAct = pr?.status === 'IN_HOD_REVIEW';
   const allDecided = lines.length > 0 && decided === lines.length;
   const anyRejected = Object.values(disp).some(d => d === 'rejected');
 
+  // Mirrors the server gate in PrService.advance(): a line is quotable unless
+  // this decision marks it held or rejected, or it is ALREADY persisted that way.
+  // Reading the persisted state too matters — `disp` only seeds itself from lines
+  // that already carry a decision, so a held line whose disposition has not been
+  // re-touched is only visible here, not in `disp`.
+  const quotableCount = lines.filter(l => {
+    const d = disp[l.id];
+    if (d === 'held' || d === 'rejected') return false;
+    if (d === 'approved') return true;
+    return !l.held && !l.rejected;
+  }).length;
+  const nothingQuotable = lines.length > 0 && quotableCount === 0;
+  const nothingQuotableMsg = `All ${lines.length} lines are held or rejected — there is nothing to source.`;
+
   async function submit(extra: Record<string, unknown> = {}) {
     if (!pr) return;
     setBusy(true); setErr(null);
@@ -297,17 +311,31 @@ const canAct = pr?.status === 'IN_HOD_REVIEW';
             )}
 
             <div className="btn-row">
-              <button className="btn primary" disabled={busy || !allDecided}
+              {/* `nothingQuotable` mirrors the server gate in PrService.advance().
+                  The server is the control; this only stops the click that the
+                  server would refuse. An undecided line still counts as quotable,
+                  because the RFQ snapshot rejects on held/rejected and not on
+                  "undecided" — so this only fires when every line is genuinely
+                  parked or thrown out. */}
+              <button className="btn primary" disabled={busy || !allDecided || nothingQuotable}
+                title={nothingQuotable ? nothingQuotableMsg : undefined}
                 onClick={() => submit(pr.warehouse_check_required ? { wantWarehouse: true } : {})}>
-                {busy ? 'Working…' : allDecided ? 'Approve & advance' : `Decide all ${lines.length} lines`}
+                {busy ? 'Working…'
+                  : nothingQuotable ? 'Nothing to source'
+                  : allDecided ? 'Approve & advance' : `Decide all ${lines.length} lines`}
               </button>
               <button className="btn danger" disabled={busy || !allDecided}
                 onClick={() => submit({ lineRejected: true })}>
                 Reject PR
               </button>
-              {!allDecided && lines.length > 0 && (
+              {nothingQuotable && (
+                <span className="text-sm" style={{ alignSelf: 'center', color: '#B91C1C' }}>
+                  {nothingQuotableMsg} Reject this PR, or approve at least one line.
+                </span>
+              )}
+              {!allDecided && lines.length > 0 && !nothingQuotable && (
                 <span className="text-sm text-mute" style={{ alignSelf: 'center' }}>
-                  {lines.length - decided} line(s) still undecided — they are treated as approved when you advance.
+                  {lines.length - decided} line(s) still undecided — they will be left as they are when you advance.
                 </span>
               )}
               {anyRejected && (

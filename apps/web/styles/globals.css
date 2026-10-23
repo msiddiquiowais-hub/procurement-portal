@@ -221,6 +221,40 @@ code, .mono { font-family: 'JetBrains Mono', monospace; }
 .card-h .meta { font-size: 12px; color: var(--text-mute); }
 .card-b { padding: 18px 20px; }
 
+/* ── COLLAPSIBLE CARDS ────────────────────────────────────────────────────
+   Click any card header to fold its body away. Driven by
+   components/CardCollapse.tsx, which marks eligible headers with
+   data-collapse="done" at runtime. The chevron is a CSS ::after on
+   .card-h (which is already a flex row, so it lands at the far right)
+   rather than an injected element — nothing in the DOM is rewritten, so a
+   React re-render cannot lose it.
+
+   Scoped to [data-collapse="done"] on purpose: headers that were skipped
+   (inside a modal overlay, or with no body to hide) get no cursor and no
+   chevron, so the affordance never appears where the click does nothing. */
+.card-h[data-collapse="done"] { cursor: pointer; user-select: none; }
+.card-h[data-collapse="done"]:hover { background: var(--line-soft); }
+.card-h[data-collapse="done"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.card-h[data-collapse="done"]::after {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-left: 2px;
+  border-right: 2px solid var(--text-mute);
+  border-bottom: 2px solid var(--text-mute);
+  transform: rotate(45deg);
+  transition: transform .15s ease;
+}
+/* Folded: chevron flips, and the header's own bottom border goes with the body
+   so the card reads as one closed strip rather than an empty header. */
+.card.is-folded > .card-h { border-bottom-color: transparent; }
+.card.is-folded > .card-h::after { transform: rotate(-45deg); }
+.card.is-folded > .card-b { display: none; }
+
 .card.kpi { padding: 16px 18px; }
 .card.kpi .kpi-label { font-size: 11px; color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
 .card.kpi .kpi-value { font-size: 24px; font-weight: 700; margin-top: 6px; color: var(--text); letter-spacing: -0.02em; }
@@ -596,6 +630,72 @@ table.pr-items-table select.pr-select-wide { min-width: 200px; }
 .pill.pushed    { background: #E0E7FF; color: #3730A3; }
 .pill.locked    { background: #FCE7F3; color: #9D174D; }
 
+/* ── Sourcing status cell (my-prs STATUS column) ───────────────────────────────
+   The STATUS pill deliberately reuses the RFQ palette above rather than the
+   tone classes: "Awaiting Quotes" is the prototype's own "RFQ issued, awaiting
+   quotes" pill, which is painted #DBEAFE / #1E40AF (prototype line 6082). The
+   two chips beside it are MODIFIERS, not statuses — a re-issued RFQ is still
+   simultaneously "Awaiting Quotes (3/5)", and an RFQ that cleared the received
+   threshold can still carry vendors who never answered. Rendering either as a
+   second pill would overwrite the quote progress with audit information. */
+.sourcing-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chip-reissued {
+  display: inline-block; padding: 2px 6px; border-radius: 4px;
+  background: #F5F3FF; color: #5B21B6; border: 1px solid #DDD6FE;
+  font-size: 10px; font-weight: 600; white-space: nowrap;
+}
+.chip-silent {
+  display: inline-block; padding: 2px 6px; border-radius: 4px;
+  background: #F1F5F9; color: #92400E; border: 1px solid #FDE68A;
+  font-size: 10px; font-weight: 600; white-space: nowrap;
+}
+
+/* ── RFQ re-issue: original beside re-issue ─────────────────────────────────
+   The pipe that separates the original issue from the re-issue in the
+   "RFQ & quotes" header. A real border rather than a "|" text node, so it
+   lines up with the pills around it instead of sitting on the text baseline. */
+.rq-split-pipe {
+  display: inline-block;
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--line);
+  vertical-align: middle;
+}
+/* The split "original | re-issued" layout for Request for Quotations was built
+   and then reverted: it printed every vendor twice. Its .rq-split* rules went
+   with it. The re-issue is a COLUMN on the one row a vendor has. */
+
+/* ── Action tabs (my-prs in-place filter) ────────────────────────────────────
+   Sits directly under the card header and filters the rows already in memory —
+   no navigation, no refetch. Built on the same neutral chrome as .pill so it
+   reads as part of the card rather than a second, competing toolbar. */
+.tab-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--line); background: #F8FAFC;
+  color: #475569; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: background .12s, color .12s, border-color .12s;
+}
+.tab:hover { background: #F1F5F9; }
+.tab.active {
+  background: #0F172A; border-color: #0F172A; color: #F8FAFC;
+}
+/* A tab with nothing in it stays clickable — an empty result is information —
+   but is dimmed so it does not compete with the tabs that have work behind them. */
+.tab.empty:not(.active) { opacity: .55; }
+.tab-count {
+  display: inline-block; min-width: 18px; padding: 0 5px;
+  border-radius: 999px; background: #E2E8F0; color: #475569;
+  font-size: 10px; font-weight: 700; text-align: center;
+}
+.tab.active .tab-count { background: #F8FAFC; color: #0F172A; }
+
 /* ── rfq-detail bid rows ─────────────────────────────────────────────────────
    Copied verbatim from the prototype stylesheet (bid-row, bid-row.head,
    bid-row.winner). The six-column grid is Vendor | Amount | Lead | Warranty |
@@ -969,6 +1069,25 @@ table.wf-rule-table input.wf-reason { width: 100%; }
 .lcc-opt.is-selected { background: #F0FDF4; }
 .lcc-opt.is-cursor.is-selected { background: var(--accent-soft); }
 
+/* A category with no invitable vendor behind it. Visible, explained, and not
+   clickable. `cursor: not-allowed` is load-bearing here — it is the only cue a
+   pointer user gets before clicking and concluding the control is broken. The
+   is-cursor background is suppressed too, so arrowing onto a dead-end row does
+   not paint it as a live choice. */
+.lcc-opt.is-disabled {
+  cursor: not-allowed;
+  opacity: .62;
+}
+.lcc-opt.is-disabled .lcc-opt-name { color: var(--text-mute); font-weight: 500; }
+.lcc-opt.is-disabled.is-cursor { background: transparent; }
+.lcc-opt.is-disabled .lcc-opt mark { background: #F1F5F9; color: var(--text-mute); }
+.lcc-blocked {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .lcc-head {
   position: sticky; top: 0; z-index: 1;
   padding: 6px 10px;
@@ -1018,3 +1137,489 @@ table.wf-rule-table input.wf-reason { width: 100%; }
 }
 .lcc-clear:hover { text-decoration: underline; }
 .lcc-count { font-size: 11px; color: var(--text-mute); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CLASSIFICATION COMBOBOX — the per-line Capex/Opex control
+   ═══════════════════════════════════════════════════════════════════════
+   Reuses the `.lcc*` panel wholesale (search box, list, two-column grid,
+   sticky header, footer, highlight) because that machinery is already built
+   and already fixed for the overflow-clipping and viewport-fit problems.
+   Only what is specific to a Capex/Opex class lives here.
+
+   The capex/opex colouring is INFORMATION, not decoration: it is the same
+   distinction the award trigger makes in SQL when it splits a header into
+   capex_amount and opex_amount (migration 069 filters on 'CAPEX%' /
+   'OPEX%'). Two rows that share a colour land in the same bucket, so a
+   reader can see the grouping without being told it. */
+.clsx { position: relative; width: 100%; }
+
+/* A capital line is on the asset register; an operating line is expensed.
+   The left rule carries the distinction, matching the `.chip` colours the
+   control replaced so the two screens agree at a glance. */
+.clsx-capex .clsx-trigger { border-left: 3px solid #15803D; }
+.clsx-opex  .clsx-trigger { border-left: 3px solid #B45309; }
+
+.clsx-opt.clsx-capex { box-shadow: inset 3px 0 0 #15803D; }
+.clsx-opt.clsx-opex  { box-shadow: inset 3px 0 0 #B45309; }
+.clsx-opt.clsx-capex.is-selected,
+.clsx-opt.clsx-capex.is-cursor.is-selected { background: #F0FDF4; }
+.clsx-opt.clsx-opex.is-selected,
+.clsx-opt.clsx-opex.is-cursor.is-selected { background: #FFFBEB; }
+
+/* The right column answers "where does this land?" — keep it legible but
+   clearly subordinate to the class name beside it. */
+.clsx-outcome { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The trigger is a single control in a 340px column, so give the chosen
+   label the room and let it truncate rather than wrap the row taller. */
+.clsx-trigger .lcc-trigger-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* "Clear selection" is meaningless when nothing is chosen — say so instead
+   of offering a button that does nothing. */
+.clsx .lcc-clear[disabled] { color: var(--slate-soft); cursor: default; text-decoration: none; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   RECEIVE QUOTATION — the per-line pricing waterfall form
+   ═══════════════════════════════════════════════════════════════════════
+   Translated from the officer's HTML prototype. Tailwind utility classes
+   became real classes here so the form picks up the app's tokens instead of
+   hard-coding greys that would drift from the rest of the product.
+
+   Column order is fixed by procurement convention, not by the design:
+     item | category | qty | unit price | gross | disc | net | tax | total
+   and the totals row must sit under those same columns. Changing the order
+   breaks officers' muscle memory and the printed comparative statement. */
+
+/* modal chrome */
+.rq-head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: 14px 20px; background: var(--navy); color: #fff;
+}
+.rq-head h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.rq-head .rq-sub { font-size: 11px; color: #94A3B8; margin-top: 3px; }
+.rq-x {
+  background: transparent; border: 0; color: #94A3B8; font-size: 18px;
+  line-height: 1; cursor: pointer; padding: 0 2px;
+}
+.rq-x:hover { color: #fff; }
+.rq-body { padding: 14px 16px; }
+.rq-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bg);
+}
+
+/* the two control strips */
+.rq-strip {
+  display: grid; grid-template-columns: repeat(12, 1fr); gap: 10px;
+  padding: 10px 12px; margin-bottom: 10px;
+  background: var(--bg); border: 1px solid var(--line-soft); border-radius: 8px;
+  align-items: end;
+}
+.rq-strip .lbl {
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; display: block;
+}
+.rq-sp5 { grid-column: span 5; } .rq-sp2 { grid-column: span 2; }
+.rq-sp3 { grid-column: span 3; } .rq-sp9 { grid-column: span 9; }
+.rq-center { text-align: center; }
+.rq-strip input, .rq-strip select { padding: 7px 10px; font-size: 12px; }
+
+/* Why a control in the strip is unavailable. The vendor picker hits this on an
+   RFQ with no invitation: the select goes disabled, and a disabled control with
+   no stated reason is indistinguishable from a broken one. */
+.rq-hint-error {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--danger);
+}
+
+/* ── a line this vendor was never invited to price ───────────────────────────
+   The row is not hidden and not deleted: it is part of the RFQ, and pretending
+   otherwise would make the grid look like a different RFQ depending on which
+   vendor is selected. It is dimmed, its inputs are disabled, and the category
+   cell says why. */
+.rq-tbl tr.is-locked td,
+.rq-tbl tr.is-locked td input { opacity: .55; }
+.rq-tbl tr.is-locked td input { cursor: not-allowed; }
+.rq-lock {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #FEF2F2;
+  border: 1px solid #FCA5A5;
+  color: #991B1B;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+/* A line the vendor ALREADY quoted before being unmapped. Bolder than the
+   routine "not invited" case, because this one revoked something that existed. */
+.rq-lock.is-revoked {
+  background: #7F1D1D;
+  border-color: #7F1D1D;
+  color: #FEF2F2;
+}
+/* Sits directly above the grid, where the locked rows are visible. Its job is
+   to name the control and the remedy, so a locked row reads as a decision
+   rather than a rendering fault. */
+.rq-locked-banner {
+  margin: 0 0 8px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid #FCA5A5;
+  background: #FEF2F2;
+  color: #7F1D1D;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* section bar carried the discount + tax-basis toggles. Both moved into the
+   header banner, so the bar had a title and nothing else — a whole row of
+   padding to say "here are the prices". Removed with the bar. */
+.rq-toggles { display: flex; align-items: center; gap: 14px; font-size: 12px; }
+.rq-toggles label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-weight: 500; }
+.rq-toggles .sep { border-left: 1px solid var(--line); padding-left: 14px; display: flex; gap: 12px; }
+.rq-toggles input[type="radio"], .rq-toggles input[type="checkbox"] { width: auto; margin: 0; }
+
+/* the pricing grid */
+.rq-wrap {
+  /* max-height is set further down, next to the scrolling rules. A fixed
+     `max-height: 340px` here was the original bug: it showed ~4 rows at 1080p
+     and collapsed to 2 on a laptop, because it counted rows against a hard
+     pixel figure with no regard for the dialog chrome around it. */
+  border: 1px solid var(--line); border-radius: 8px;
+  overflow: auto; background: var(--surface);
+}
+.rq-tbl { width: 100%; border-collapse: separate; border-spacing: 0; min-width: 1240px; font-size: 12px; }
+.rq-tbl th {
+  position: sticky; top: 0; z-index: 2;
+  padding: 9px 10px; text-align: left; font-size: 10px; font-weight: 700;
+  color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.05em;
+  background: var(--bg); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.rq-tbl td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.rq-tbl tbody tr:hover td { background: var(--bg); }
+.rq-tbl .r { text-align: right; font-variant-numeric: tabular-nums; }
+.rq-tbl .c { text-align: center; }
+.rq-item { font-weight: 600; color: var(--text); }
+.rq-code { display: block; font-size: 10px; color: var(--text-mute); font-weight: 400; }
+.rq-cat { color: var(--text-2); }
+.rq-qty { background: var(--bg); color: var(--text-2); text-align: center; white-space: nowrap; }
+
+/* editable vs derived. Gross, Net and Total are inert and stay that way: the
+   officer should not try to type into a figure the server derives, and cannot,
+   because they are not inputs. Disc Amt and Tax Amt were added to the editable
+   set on purpose — they accept a typed figure and convert it into the rate
+   beside them — so they are inputs and are sized as such. */
+.rq-in { padding: 5px 7px !important; font-size: 12px !important; text-align: right; }
+/* No up/down steppers.
+   Every numeric control in this form has a rate next to it — the discount, the
+   tax, the quantity beside them — and a spinner on a money field is a way to
+   change a price by accident. Chrome/Edge draw them on hover and focus, which
+   means they appear exactly when an officer is typing. Firefox draws them
+   permanently. `-moz-appearance: textfield` is the only spelling Firefox honours,
+   and it does not suppress the WebKit pseudo-elements, so both are needed. */
+.rq-dialog input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.rq-dialog input[type="number"]::-webkit-outer-spin-button,
+.rq-dialog input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.rq-in.pct { width: 66px; text-align: center; }
+.rq-in.disc { width: 62px; text-align: center; }
+.rq-in.unit { width: 108px; }
+/* The two amount columns that accept a typed figure. Wider than the rate
+   columns because a money figure runs to six digits far more often than a
+   percentage does; right-aligned like Unit Price, and deliberately NOT carrying
+   thousands separators — a `type="number"` cannot hold them, so grouping them
+   would mean either showing text the field cannot parse or swapping in a
+   different control per cell. They read as money from the column header, the
+   alignment and the tabular figures, which is where Gross and Total get it too. */
+.rq-in.amt { width: 100px; font-variant-numeric: tabular-nums; }
+.rq-in.warr { width: 66px; text-align: center; }
+.rq-ro { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rq-tot { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rq-decl { color: var(--text-mute); font-style: italic; }
+
+/* The discount columns used to be hidden wholesale by `.cols-off .rq-disc`
+   while the header, the body and the totals row each decided independently
+   whether the column was present. They now come from one list
+   (components/sourcing/quoteColumns.ts) and are removed from the markup
+   together, so there is nothing left for this rule to do — and no way for one
+   of the three rows to disagree with the other two. */
+
+/* totals row, pinned to the bottom of the scroll box */
+.rq-tbl tfoot td {
+  position: sticky; bottom: 0; z-index: 2;
+  padding: 11px 10px; background: var(--bg);
+  border-top: 2px solid var(--line); font-weight: 700; white-space: nowrap;
+}
+.rq-tbl tfoot .rq-lbl { text-align: right; color: var(--text-2); text-transform: uppercase; font-size: 11px; }
+.rq-tbl tfoot .rq-grand { color: var(--accent); font-size: 13px; }
+
+/* validity warning — a quote that expired before it was received is a real
+   commercial problem, so it reads as an error rather than a hint. */
+.rq-exp { color: var(--danger); font-size: 11px; margin-top: 3px; display: block; }
+.rq-note { font-size: 11px; color: var(--text-mute); margin-top: 8px; }
+/* ── Receive Quotation: header-banner actions ───────────────────────────────
+   The version radios and the Save button live in the navy banner rather than
+   in a strip under the grid. Placing the "am I replacing or appending, and
+   why?" decision above the numbers it applies to means the officer reads the
+   consequence before scrolling to commit. */
+.rq-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rq-vers {
+  display: flex; align-items: center; gap: 12px;
+  padding: 5px 11px; border-radius: 7px;
+  background: rgba(255, 255, 255, .09); border: 1px solid rgba(255, 255, 255, .18);
+}
+.rq-vers label {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; color: #E2E8F0; cursor: pointer; white-space: nowrap;
+}
+.rq-vers input[type="radio"] { width: auto; margin: 0; accent-color: #93C5FD; }
+.rq-btn {
+  border-radius: 7px; padding: 7px 13px; font-size: 12px; font-weight: 600;
+  cursor: pointer; border: 1px solid transparent; font-family: inherit;
+}
+.rq-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.rq-btn.primary:hover { background: #2573a8; }
+.rq-btn.ghost { background: rgba(255, 255, 255, .1); color: #E2E8F0; border-color: rgba(255, 255, 255, .25); }
+.rq-btn.ghost:hover { background: rgba(255, 255, 255, .18); }
+.rq-btn:disabled { opacity: .5; cursor: not-allowed; }
+.rq-hint { font-size: 11px; color: var(--text-mute); }
+/* The file control now lives in the header banner (see .rq-filewrap below);
+   this earlier, light-on-white strip styling had no elements left to apply to
+   and would have fought the banner's dark treatment if any had. */
+
+/* grid additions: real RFQ description + a declined column beside warranty */
+.rq-desc { color: var(--text-2); max-width: 260px; }
+.rq-mute { color: var(--text-mute); }
+.rq-tbl tbody tr.is-declined td { background: #F8FAFC; }
+.rq-tbl tbody tr.is-declined .rq-item,
+.rq-tbl tbody tr.is-declined .rq-desc { color: var(--text-mute); text-decoration: line-through; }
+
+/* ── grid scrolling ──────────────────────────────────────────────────────────
+   Sized from the viewport, because a percentage or a fixed row count is wrong on
+   one screen or the other.
+
+   `max-height: 46vh` looked right at 1080p and collapsed to two rows on a
+   laptop, because vh measures the WHOLE viewport while the modal also competes
+   for it. What is left is small and grows smaller on shorter screens — the worst
+   case, because a short screen is exactly where an officer has the least room.
+
+   Scopes to both axes, so a wide grid still scrolls sideways on a laptop. */
+/* `94vh`, not `100vh`: the dialog itself is capped at 94vh, so a grid sized from
+   the full viewport would push the dialog into a page-level scrollbar and undo
+   the scrolling the grid exists to provide. The 285px is the chrome that is
+   actually above and below the grid when the banner is open (banner + field
+   strip + footer + body padding + the error alert when one is showing). The
+   clamp keeps it usable either way: never so short that a row cannot be read,
+   never so tall that a 15-item RFQ stretches the dialog past the viewport.
+   Scopes to both axes, so a wide grid still scrolls sideways on a laptop. */
+.rq-wrap {
+  max-height: clamp(240px, calc(94vh - 285px), 640px);
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+/* Folded: the banner and the field strip are gone, so the grid gets their
+   height back. ~135px lower offset and a higher ceiling is the difference
+   between roughly five visible lines and the 10-15 the form has to survive. */
+.rq-wrap.is-folded { max-height: clamp(420px, calc(94vh - 150px), 1000px); }
+/* A thin, always-visible scrollbar. `scrollbar-width: thin` is honoured in
+   Firefox; the ::-webkit rules cover Chrome/Edge, where the default scrollbar
+   is wide enough to steal a column from the pricing figures. */
+.rq-wrap { scrollbar-width: thin; scrollbar-color: var(--slate-soft) transparent; }
+.rq-wrap::-webkit-scrollbar { width: 9px; height: 9px; }
+.rq-wrap::-webkit-scrollbar-track { background: var(--bg); }
+.rq-wrap::-webkit-scrollbar-thumb {
+  background: var(--slate-soft); border-radius: 5px;
+  border: 2px solid var(--bg);
+}
+.rq-wrap::-webkit-scrollbar-thumb:hover { background: var(--text-mute); }
+.rq-tbl { min-width: 1500px; }
+
+/* the sticky header must sit above the scrolling body, or a row scrolls under
+   it and both are half-visible while scrolling */
+.rq-tbl th { z-index: 3; }
+.rq-tbl tfoot td { z-index: 3; }
+
+/* ── the upload control ──────────────────────────────────────────────────────
+   The browser's own file button says "Choose File" and its text cannot be
+   changed from CSS — it is fixed by the UA, and localised. So it is suppressed
+   with `display: none` and the visible control is a real `<label>` pointing at
+   the same input, which keeps the native picker, keyboard access and the File
+   object that `uploadFile()` needs.
+
+   `display: none` on ::file-selector-button is safe precisely BECAUSE the label
+   drives the input: the input is not hidden, only its default button, so
+   clicking the label still opens the picker and Space/Enter still reach it. */
+.rq-filewrap { display: inline-flex; align-items: center; flex: 0 0 auto; }
+.rq-upload {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 260px;
+  padding: 6px 12px; border-radius: 7px; cursor: pointer;
+  font-size: 12px; font-weight: 500; font-family: inherit; line-height: 1.2;
+  color: #E2E8F0; background: rgba(255, 255, 255, .1);
+  border: 1px solid rgba(255, 255, 255, .25);
+}
+.rq-upload:hover { background: rgba(255, 255, 255, .18); }
+.rq-upload.has-file { color: #BBF7D0; border-color: rgba(134, 239, 172, .4); background: rgba(134, 239, 172, .12); }
+.rq-upload input[type="file"].rq-file { display: none; }
+.rq-upload input[type="file"].rq-file::file-selector-button { display: none; }
+/* The filename is the longest thing on this bar and the least important part of
+   it, so it takes what is left and truncates from the end — the extension is
+   what tells two "quotation…" files apart. */
+.rq-upload-txt { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.rq-filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rq-tick { font-weight: 700; }
+.rq-req-star { color: #FCA5A5; margin-left: 4px; font-weight: 700; }
+
+/* ── the revision-reason dialog ──────────────────────────────────────────── */
+.rq-modal-sm {
+  background: var(--surface); border-radius: 10px; width: min(520px, 100%);
+  box-shadow: 0 20px 50px rgba(15,23,42,.4); border: 1px solid var(--line);
+}
+.rq-modal-h {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 14px 18px; border-bottom: 1px solid var(--line-soft);
+}
+.rq-modal-h h3 { font-size: 14px; font-weight: 600; margin: 0; }
+.rq-modal-b { padding: 16px 18px; }
+.rq-modal-b textarea { min-height: 90px; }
+.rq-modal-f {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 18px; border-top: 1px solid var(--line-soft); background: var(--bg);
+  border-radius: 0 0 10px 10px;
+}
+
+/* normalised-PKR footer, shown whenever it differs from the typed currency */
+.rq-norm {
+  display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; gap: 10px; margin-top: 10px;
+  padding: 9px 12px; font-size: 12px;
+  background: var(--bg); border: 1px solid var(--line-soft); border-radius: 8px;
+}
+/* Declared next to .rq-sp3 for readability; same 12-column strip as the rest. */
+.rq-sp4 { grid-column: span 4; }
+
+/* ── collapsible header banner ────────────────────────────────────────────────
+   The banner is two rows: an identity/decision/actions row, and ONE control bar
+   carrying the document, the discount options, the tax-inclusive switch and the
+   remarks. Both used to be separate strips below the grid header, costing the
+   officer ~190px before the first line of pricing — about five visible rows on a
+   laptop, which is unusable for a 12-item RFQ.
+
+   `.rq-head` is a COLUMN now: the old flex row could not hold a full-width
+   control bar underneath itself without becoming a second strip. */
+.rq-dialog {
+  background: var(--surface); border-radius: 10px; width: min(1500px, 100%);
+  max-height: 94vh; overflow: auto; box-shadow: 0 20px 50px rgba(15,23,42,.35);
+  border: 1px solid var(--line);
+}
+.rq-head {
+  display: block;                       /* was flex row — see above */
+  padding: 12px 20px; background: var(--navy); color: #fff;
+}
+/* Folded: the bar and the field strip are gone, so the banner is one compact
+   line and the grid gets the difference. `position: sticky` keeps the fold
+   control and the total reachable while a 15-line grid scrolls under it —
+   otherwise collapsing the header would hide the way to un-collapse it. */
+.rq-head.is-folded {
+  padding: 8px 20px;
+  position: sticky; top: 0; z-index: 5;
+}
+.rq-head-top {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; flex-wrap: wrap;
+}
+.rq-id { min-width: 0; }
+.rq-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* the fold control. 24px square so it lines up with the buttons beside it and
+   cannot be mistaken for the close X next to it. */
+.rq-fold {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; flex: 0 0 auto;
+  background: rgba(255, 255, 255, .1); color: #E2E8F0;
+  border: 1px solid rgba(255, 255, 255, .25); border-radius: 6px;
+  cursor: pointer; font-size: 11px; line-height: 1;
+}
+.rq-fold:hover { background: rgba(255, 255, 255, .2); color: #fff; }
+.rq-fold:disabled { opacity: .5; cursor: not-allowed; }
+
+/* the folded summary line: vendor, version decision, running total, and any
+   state that would otherwise be invisible — entered remarks, and required fields
+   still missing. Without that last one, a folded officer presses Save and is
+   told four fields are missing, none of which are on screen. */
+.rq-folded-sum {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 12px; color: #E2E8F0; min-width: 0;
+}
+.rq-folded-sum b { font-weight: 600; color: #fff; }
+.rq-folded-v { color: #93C5FD; }
+.rq-folded-t {
+  font-variant-numeric: tabular-nums; font-weight: 600; color: #fff;
+  padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, .1);
+}
+.rq-flag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 999px;
+  background: rgba(255, 255, 255, .12); color: #CBD5E1;
+}
+.rq-flag.warn { background: rgba(252, 165, 165, .18); color: #FCA5A5; }
+
+/* the single control bar. `flex-wrap` so a narrow window drops the remarks to
+   its own line instead of squashing the buttons into two characters. */
+.rq-head-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, .12);
+}
+/* the toggles live on navy now, so the dark-banner treatment is applied here
+   rather than inheriting the .rq-strip light surface they were written for. */
+.rq-head-bar .rq-toggles { color: #E2E8F0; }
+.rq-head-bar .rq-toggles label { font-weight: 500; }
+.rq-head-bar .rq-toggles .sep { border-left-color: rgba(255, 255, 255, .18); }
+.rq-head-bar .rq-toggles input[type="radio"],
+.rq-head-bar .rq-toggles input[type="checkbox"] { accent-color: #93C5FD; }
+.rq-bar-sep { width: 1px; height: 20px; background: rgba(255, 255, 255, .15); flex: 0 0 auto; }
+
+/* Remarks: ONE line, flex-grows to fill the bar. It used to be a full-width
+   input in a strip of its own — ~70px of vertical space to type something
+   optional. `min-width: 0` is load-bearing: a flex item defaults to min-width
+   auto, so without it the long placeholder refuses to shrink and pushes the
+   document button off the bar. */
+.rq-remarks {
+  flex: 1 1 220px; min-width: 0;
+  padding: 6px 10px; font-size: 12px; font-family: inherit;
+  color: #E2E8F0; background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .2); border-radius: 7px;
+}
+.rq-remarks::placeholder { color: #94A3B8; }
+.rq-remarks:focus {
+  outline: none; border-color: #93C5FD; background: rgba(255, 255, 255, .12);
+}
+
+/* Visually hidden but read out — the caret glyph alone tells a screen-reader
+   user nothing about what the control does. */
+.rq-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ── "these lines will not be recorded" notice ────────────────────────────────
+   Sits under the totals. Not an alert: it is informational and must not read as
+   a blocking error, because it describes a normal state (an RFQ has fifteen
+   lines and the vendor quoted three of them). */
+.rq-skip {
+  display: block; margin-top: 6px; padding-top: 6px; width: 100%;
+  border-top: 1px solid var(--line-soft);
+  font-size: 11px; color: var(--text-2);
+}
+.rq-skip b { color: var(--text); }

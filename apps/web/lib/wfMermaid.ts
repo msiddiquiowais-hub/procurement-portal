@@ -6,7 +6,7 @@
 // makes the diagram testable without a browser and guarantees the picture can
 // never disagree with the grid: both are generated from the same state.
 
-import { LIGHT_ACTOR_REGISTRY, LIGHT_STAGE_LABEL } from '@procurement/workflow-engine';
+import { LIGHT_ACTOR_REGISTRY, stageDepartmentLabel } from '@procurement/workflow-engine';
 
 export type WfStep = {
   key: string;
@@ -169,7 +169,11 @@ export function buildMermaidFromSteps(
   // Emit target nodes after their edges so Mermaid never sees a forward ref.
   for (const [key, id] of targetNodes) {
     const meta = targetMeta.get(key)!;
-    const stageLabel = LIGHT_STAGE_LABEL[meta.stage] ?? meta.stage;
+    // `stageDepartmentLabel`, not a bare LIGHT_STAGE_LABEL lookup: the Wave-3
+    // governance targets are not in that map, so the `?? meta.stage` fallback
+    // printed the raw key — a `PACK_LOCKED` node in the middle of a diagram
+    // whose every other node reads as a department.
+    const stageLabel = stageDepartmentLabel(meta.stage);
     lines.push(
       `  ${id}["${sanitizeLabel(stageLabel)}<br/>via ${sanitizeLabel(resolveActorName(meta.actor))}"]:::target`,
     );

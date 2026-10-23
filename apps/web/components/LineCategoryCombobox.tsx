@@ -56,7 +56,41 @@ export type LineCategory = {
   code: string;
   name: string;
   description: string | null;
+  /**
+   * How many vendors can actually be INVITED from this category — the four
+   * eligibility rules already applied, so "3" means three names that would pass
+   * `insertInvitation()`, not three rows in `core.vendor_categories`.
+   *
+   * Optional so an older/partial payload degrades to "assume sourceable" rather
+   * than locking the requester out of every category. The RFQ gate does not
+   * rely on this field being present: it re-derives the fact server-side, so a
+   * missing count costs a warning, never a dead-end line.
+   */
+  vendor_count?: number;
 };
+
+/**
+ * A category nobody can be reached through is a dead end for the line.
+ *
+ * SELECTABLE (the FK accepts it, the route rule may branch on it) is not the
+ * same as SOURCEABLE. Picking one here sends the requester to an Issue RFQ modal
+ * where no vendor can ever match the line, and the RFQ goes out covering it
+ * anyway — the failure then lands at AWARD, in another screen, weeks later.
+ *
+ * So the row stays VISIBLE and is simply not selectable. Hiding it would be
+ * worse: the requester would conclude the category does not exist, and pick
+ * something else for no stated reason. Showing it greyed with the reason is the
+ * only version that teaches them anything.
+ */
+function isSourceable(c: LineCategory): boolean {
+  return c.vendor_count === undefined || c.vendor_count > 0;
+}
+
+/** Same rule, by code — used by choose(), which only receives a code. */
+function isSourceableByCode(cats: LineCategory[], code: string): boolean {
+  const c = cats.find(x => x.code === code);
+  return !c || isSourceable(c);
+}
 
 type Props = {
   categories: LineCategory[];
@@ -206,6 +240,8 @@ export default function LineCategoryCombobox({
     return scored.map((x) => x.cat);
   }, [categories, query, tokens]);
 
+  const unavailableInMatches = matches.filter(c => !isSourceable(c)).length;
+
   // A click outside closes the list. The trigger lives in the table; the panel is
   // portalled to <body>, so BOTH are tested — checking only the wrapper would let
   // every click inside the panel count as "outside" and close it on selection.
@@ -312,6 +348,10 @@ export default function LineCategoryCombobox({
   }
 
   function choose(code: string) {
+    // The guard lives in choose(), not just on the row's onClick, because
+    // keyboard Enter reaches the same function through a different path. A gate
+    // on one entry point is not a gate.
+    if (code && !isSourceableByCode(categories, code)) return;
     onChange(code);
     closePanel(true);
   }
@@ -410,18 +450,27 @@ export default function LineCategoryCombobox({
             {matches.map((c, i) => {
               const isSel = c.code === value;
               const isCur = i === cursor;
+              const isSrc = isSourceable(c);
               return (
                 <div
                   key={c.code}
                   id={id ? `${id}-opt-${i}` : undefined}
                   role="option"
                   aria-selected={isSel}
-                  aria-label={`${c.name} — ${c.description || 'no description'}`}
+                  aria-disabled={isSrc ? undefined : 'true'}
+                  aria-label={
+                    isSrc
+                      ? `${c.name} — ${c.description || 'no description'}`
+                      : `${c.name} — not selectable, no vendor is mapped to this category`
+                  }
                   data-active={isCur ? 'true' : 'false'}
-                  className={`lcc-opt${isCur ? ' is-cursor' : ''}${isSel ? ' is-selected' : ''}`}
+                  className={
+                    `lcc-opt${isCur ? ' is-cursor' : ''}${isSel ? ' is-selected' : ''}` +
+                    `${isSrc ? '' : ' is-disabled'}`
+                  }
                   onMouseEnter={() => setCursor(i)}
                   onMouseDown={(e) => e.preventDefault()}  // keep focus in the search box
-                  onClick={() => choose(c.code)}
+                  onClick={() => { if (isSrc) choose(c.code); }}
                 >
                   {/* LEFT COLUMN — the name, with its machine code beneath it. */}
                   <div className="lcc-cell-name">
@@ -441,6 +490,14 @@ export default function LineCategoryCombobox({
                     {c.description
                       ? <Render parts={highlight(c.description, query)} />
                       : <span className="lcc-no-desc">No description on file</span>}
+                    {/* WHY it cannot be picked, on the row itself. A greyed-out
+                        row with no explanation reads as a bug, and the requester
+                        has no other screen that would tell them. */}
+                    {!isSrc && (
+                      <div className="lcc-blocked">
+                        No vendor mapped — this line could not be sent to an RFQ
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -453,6 +510,9 @@ export default function LineCategoryCombobox({
             </button>
             <span className="lcc-count">
               {matches.length} of {categories.length}
+              {/* Say how many of the CURRENT matches are unusable, so a search
+                  that returns only dead-ends does not read as a full result set. */}
+              {unavailableInMatches > 0 && ` · ${unavailableInMatches} with no vendor`}
             </span>
           </div>
         </div>,

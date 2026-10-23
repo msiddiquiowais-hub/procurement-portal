@@ -41,7 +41,10 @@ type Bid = {
   currency: string;
   lead_days: number | null;
   warranty_months: number | null;
+  warranty_months_max: number | null;
+  warranty_from_lines: boolean;
   validity_days: number | null;
+  valid_until: string | null;
   received_at: string | null;
   is_new_vendor: boolean;
   compliance: Compliance;
@@ -145,7 +148,16 @@ export default function RfqDetail() {
                   )}
                 </div>
                 <div className="text-sm text-mute">
-                  Valid {b.validity_days !== null ? `${b.validity_days} days` : '—'}
+                  Valid{' '}
+                  {/* The recorded expiry wins over the duration. `validity_days`
+                      is a length, not a date, and is NULL on quotes that carry a
+                      real `valid_until` — so reporting only the duration drew two
+                      em-dashes over a validity date that was on file all along. */}
+                  {b.valid_until
+                    ? `until ${b.valid_until}`
+                    : b.validity_days !== null
+                      ? `${b.validity_days} days`
+                      : '—'}
                   {b.received_at ? ` · Received ${fmtDateTime(b.received_at)}` : ''}
                 </div>
               </div>
@@ -159,7 +171,23 @@ export default function RfqDetail() {
               </div>
               <div>
                 <div className="text-sm text-mute">Warranty</div>
-                <div>{cell(b.warranty_months, 'mo')}</div>
+                {/* Quoted per line, so a multi-line quote can carry a different
+                    warranty on each line. Showing the floor alone would understate
+                    what was offered; showing the top alone would overstate it. When
+                    they differ the range is shown, because a single number would be
+                    a figure nobody actually wrote down. */}
+                <div>
+                  {b.warranty_months !== null && b.warranty_months !== undefined ? (
+                    <>
+                      {b.warranty_months_max != null && b.warranty_months_max !== b.warranty_months
+                        ? `${b.warranty_months}–${b.warranty_months_max}`
+                        : b.warranty_months}
+                      <span className="text-sm text-mute"> mo</span>
+                    </>
+                  ) : (
+                    <span className="text-mute">&mdash;</span>
+                  )}
+                </div>
               </div>
               <div>
                 <div className="text-sm text-mute">Compliance</div>
@@ -181,16 +209,29 @@ export default function RfqDetail() {
           ))
         )}
 
-        {canLock && bids.length > 0 && (
+        {/* Option A: the RFQ screen COLLECTS quotes, the CS screen EVALUATES and
+            LOCKS. This used to render one disabled "Lock CS — pick <vendor>"
+            placeholder per bid, which read as a second lock path that never
+            existed and pointed at a Wave that had already landed. Locking now
+            happens in exactly one place — pages/cs/[id].tsx — so there is a
+            single, unambiguous point at which a decision is recorded.
+
+            The gate here is STATE, not permission: the CS becomes meaningful
+            once quotes exist. A button disabled with its reason teaches the user
+            why; a hidden one teaches nothing. The API refuses an empty
+            generate() regardless of what this renders. */}
+        {canLock && (
           <div className="card-b" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {/* The CS lock lands with Wave 2 step 6 and the `cs` screen in step 7.
-                Rendered disabled rather than wired to a route that 404s. */}
-            {bids.map(b => (
-              <button key={b.quotation_id} className="btn ghost" disabled
-                title="Comparative Statement lock lands with Wave 2 step 6">
-                Lock CS &mdash; pick {b.vendor_name}
+            {bids.length === 0 ? (
+              <button className="btn ghost" disabled
+                title="The Comparative Statement becomes available once at least one quote has been received.">
+                Comparative Statement &mdash; awaiting quotes
               </button>
-            ))}
+            ) : (
+              <Link href={`/cs/${d?.rfq.pr_id}`} className="btn primary">
+                Open the Comparative Statement &rarr;
+              </Link>
+            )}
           </div>
         )}
       </div>

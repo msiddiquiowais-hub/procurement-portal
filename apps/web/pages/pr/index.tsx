@@ -10,7 +10,7 @@ import Link from 'next/link';
 import { useSession } from '../../lib/session';
 import { api } from '../../lib/api';
 import Shell from '../../components/Shell';
-import { ItemChips, DeptChip, StagePill, pkr, fmtDate } from '../../lib/ui';
+import { ItemChips, DeptChip, StagePill, pkr, fmtDate, visibleItems, seesHeldLines as seesHeldForRole } from '../../lib/ui';
 
 type Row = {
   id: string;
@@ -22,9 +22,22 @@ type Row = {
   estimated_amount: number;
   status: string;
   last_updated_at: string;
-  item_count: number;
-  items_preview: Array<{ qty: number; uom: string; description: string | null }>;
-  items_overflow: number;
+  /** EVERY line on the PR, with its HOD disposition. Never truncated. */
+  items: Line[];
+};
+
+/**
+ * Every line on a PR, as the grid receives it. The server sends the full list with
+ * each line's HOD disposition attached and truncates nothing — it applies no role
+ * filtering. Slicing and the hold filter both happen here, over the lines the
+ * viewer is allowed to see.
+ */
+type Line = {
+  qty: number;
+  uom: string;
+  description: string | null;
+  /** True when the HOD parked this line. It does not flow past its own stage. */
+  held: boolean;
 };
 
 type Header = {
@@ -51,6 +64,10 @@ export default function LightPrList() {
   if (!session) return null;
   const role = session.user.role;
   const canSubmit = role === 'requester' || header?.seesAll || role === 'hod';
+  // Who keeps held lines in view. `admin` is deliberately NOT: it is the union of
+  // every stage's permissions, so it sits downstream of the HOD here — same as on
+  // /pr/[id], because both call the one shared rule in lib/ui.
+  const seesHeld = seesHeldForRole(role);
 
   return (
     <Shell title="My Light Purchase Requests" screenId="light-pr-list"
@@ -129,10 +146,16 @@ export default function LightPrList() {
             </thead>
             <tbody>
               {rows.map(p => {
+                // Chip preview, the "+N more" overflow AND the single-line title
+                // fallback all read the SAME filtered set. Deriving them from
+                // different sets is what made an earlier attempt at this filter
+                // produce confidently wrong numbers: chips hid the held lines
+                // while the count still carried them.
+                const visible = visibleItems(p.items, seesHeld);
                 // Prototype: prefer explicit title; fall back to the single
                 // line's description. Never inline the flattened item list.
                 const titleText = (p.title || '').trim()
-                  || (p.item_count === 1 ? (p.items_preview[0]?.description || '—') : '—');
+                  || (visible.length === 1 ? (visible[0]?.description || '—') : '—');
                 return (
                   <tr key={p.id} className="clickable"
                       onClick={() => router.push(`/pr/${p.id}`)}>
@@ -145,7 +168,10 @@ export default function LightPrList() {
                     </td>
                     <td><DeptChip name={p.department_name} /></td>
                     <td>
-                      <ItemChips items={p.items_preview} overflow={p.items_overflow} />
+                      <ItemChips
+                        items={visible.slice(0, 2)}
+                        overflow={Math.max(0, visible.length - 2)}
+                      />
                     </td>
                     <td className="mono num">{p.estimated_amount ? pkr(p.estimated_amount) : '—'}</td>
                     <td><StagePill stage={p.status} /></td>

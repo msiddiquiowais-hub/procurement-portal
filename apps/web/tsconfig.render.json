@@ -21,8 +21,14 @@
   },
   "include": [
     "tests/**/*.tsx",
+    "tests/**/*.ts",
     "components/governance/GovernanceCards.tsx",
     "components/supplier/SupplierCards.tsx",
+    "components/sourcing/quoteMath.ts",
+    "components/sourcing/quoteColumns.ts",
+    "components/sourcing/quoteRows.ts",
+    "components/sourcing/tabs.ts",
+    "components/ClassificationCombobox.tsx",
     "lib/ui.tsx"
   ]
 }

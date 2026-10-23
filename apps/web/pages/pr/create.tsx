@@ -20,6 +20,7 @@ import { useRouter } from 'next/router';
 import { useSession } from '../../lib/session';
 import { api } from '../../lib/api';
 import Shell from '../../components/Shell';
+import ClassificationCombobox from '../../components/ClassificationCombobox';
 import { pkr } from '../../lib/ui';
 import {
   CLASSIFICATIONS, D365_DIMENSIONS, D365_MANDATORY_DIMS,
@@ -274,22 +275,28 @@ export default function PrCreate() {
                   </label>
                 </div>
 
-                {/* classification chips — prototype renders these inline per line */}
+                {/* classification — one lookup per line, replacing five chips that
+                    wrapped onto three rows. Selecting is free; the form's own
+                    Save button is what writes, so a stray click in the list is
+                    not a half-finished requisition. */}
                 <div className="field" style={{ marginTop: 10 }}>
                   <span className="lbl">Classification *</span>
-                  <div className="chips">
-                    {CLASSIFICATIONS.map(c => (
-                      <button key={c.value}
-                        className={`chip ${c.cls}${l.classification === c.value ? ' on' : ''}`}
-                        disabled={!l.itemId}
-                        onClick={() => patch(l.key, {
-                          classification: l.classification === c.value ? '' : c.value,
-                          glAccount: l.glAccount || c.gl.split(' ')[0],
-                        })}>
-                        {c.label}
-                      </button>
-                    ))}
-                  </div>
+                  <ClassificationCombobox
+                    value={l.classification}
+                    disabled={!l.itemId}
+                    id={`pr-new-cls-${l.key}`}
+                    onChange={next => {
+                      const c = CLASSIFICATIONS.find(x => x.value === next);
+                      patch(l.key, {
+                        classification: next,
+                        // Seed the GL account from the class the first time only.
+                        // A GL already on the line is the buyer's own figure and
+                        // must survive a reclassification — overwriting it would
+                        // silently re-point a line at an account nobody chose.
+                        glAccount: l.glAccount || (c ? c.gl.split(' ')[0] : l.glAccount),
+                      });
+                    }}
+                  />
                 </div>
 
                 {/* financial dimensions accordion */}

@@ -44,6 +44,13 @@ type SettingsData = {
 
 const THRESHOLD_KEY = 'managementThreshold';
 
+type FxRate = {
+  currency: string;
+  effective_date: string;
+  rate_to_pkr: number;
+  source: string | null;
+};
+
 export default function SettingsPage() {
   const { session } = useSession();
   const user = session?.user;
@@ -54,6 +61,14 @@ export default function SettingsPage() {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
+  // FX rates: their own state and their own save. See the card's comment for
+  // why these cannot share the core.settings draft.
+  const [fx, setFx] = useState<{ rates: FxRate[]; current: FxRate[] } | null>(null);
+  const [fxDraft, setFxDraft] = useState<Record<string, number>>({});
+  const [fxErr, setFxErr] = useState('');
+  const [fxMsg, setFxMsg] = useState('');
+  const [fxBusy, setFxBusy] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const { data: d } = await api.get('/admin/settings');
@@ -62,6 +77,16 @@ export default function SettingsPage() {
       setErr('');
     } catch (e) {
       setErr((e as Error).message);
+    }
+    // A failed FX read must NOT take down the settings catalog — the screen
+    // still has everything else, and the rate card shows its own error.
+    try {
+      const { data: f } = await api.get('/admin/fx-rates');
+      setFx(f);
+      setFxDraft({});
+      setFxErr('');
+    } catch (e) {
+      setFxErr((e as ApiError).message || 'Could not load exchange rates.');
     }
   }, []);
 
@@ -98,6 +123,48 @@ export default function SettingsPage() {
       setErr(ae.errors?.length ? ae.errors.join(' · ') : ae.message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * Save each edited rate as a NEW dated row, one request per currency.
+   *
+   * Sequentially, not Promise.all: a partial failure should leave the ones
+   * already written written, and the error names the currency that failed. A
+   * parallel batch would report one aggregate error and hide which rate landed.
+   */
+  const saveFx = async () => {
+    setFxBusy(true);
+    setFxErr('');
+    setFxMsg('');
+    const today = new Date().toISOString().slice(0, 10);
+    const written: string[] = [];
+    try {
+      for (const c of fx?.current ?? []) {
+        const key = `${c.currency}|${c.effective_date}`;
+        if (!(key in fxDraft)) continue;
+        if (Number(fxDraft[key]) === Number(c.rate_to_pkr)) continue;
+        if (c.currency === 'PKR') continue;
+        try {
+          await api.put(`/admin/fx-rates/${c.currency}`, {
+            rateToPkr: fxDraft[key],
+            effectiveDate: today,
+            source: 'settings',
+          });
+          written.push(c.currency);
+        } catch (e) {
+          setFxErr(`${c.currency} was not saved: ${(e as ApiError).message}`);
+          break;
+        }
+      }
+      if (written.length) {
+        setFxMsg(
+          `Updated ${written.join(', ')} effective ${today}. The quotation form will offer these rates.`,
+        );
+        await load();
+      }
+    } finally {
+      setFxBusy(false);
     }
   };
 
@@ -249,6 +316,106 @@ export default function SettingsPage() {
               </div>
             );
           })}
+
+          {/* ── FX rates: the currency master the quotation form reads ────── */}
+          {/* Its own save path, NOT the core.settings draft above. FX rows are
+              keyed (currency, effective_date) and each write APPENDS a dated
+              rate; folding them into `draft` would send them to
+              PATCH /admin/settings, which only writes rows in core.settings and
+              would silently drop every rate. Two masters, two endpoints. */}
+          <div className="card mb-4">
+            <div className="card-h">
+              <h3>Exchange rates</h3>
+              <span className="meta">core.fx_rates — the currency list the quotation form offers</span>
+            </div>
+            <div className="card-b">
+              <p className="text-sm text-mute mb-3">
+                Editing a rate here changes the currency dropdown on Receive Quotation immediately.
+                Rates are stored by effective date and never deleted, so a quotation already recorded
+                keeps the rate it was quoted at. PKR is the normalisation baseline and is fixed at 1.
+              </p>
+
+              {!fx && <div className="text-sm text-mute">Loading rates…</div>}
+
+              {fx?.current?.length === 0 && (
+                <div className="alert warn">
+                  No exchange rates are on file, so Receive Quotation can only offer PKR.
+                </div>
+              )}
+
+              {fx && fxErr && <div className="alert error mb-3">{fxErr}</div>}
+              {fxMsg && <div className="alert success mb-3">{fxMsg}</div>}
+
+              {fx && (
+                <table className="t">
+                  <thead>
+                    <tr>
+                      <th>Currency</th>
+                      <th>Rate to PKR</th>
+                      <th>Effective</th>
+                      <th>Source</th>
+                      <th style={{ width: 150 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fx.current.map(c => {
+                      const key = `${c.currency}|${c.effective_date}`;
+                      const draftRate = key in fxDraft ? fxDraft[key] : c.rate_to_pkr;
+                      const dirty = key in fxDraft && Number(fxDraft[key]) !== Number(c.rate_to_pkr);
+                      const age = Math.floor(
+                        (Date.parse(new Date().toISOString().slice(0, 10)) - Date.parse(String(c.effective_date))) / 86_400_000,
+                      );
+                      return (
+                        <tr key={c.currency}>
+                          <td><b>{c.currency}</b></td>
+                          <td>
+                            <input
+                              className="input" style={{ width: 130 }} type="number" step="0.000001"
+                              aria-label={`${c.currency} rate to PKR`}
+                              value={draftRate}
+                              onChange={e => setFxDraft(d => ({ ...d, [key]: Number(e.target.value) }))}
+                            />
+                          </td>
+                          <td className="text-sm text-mute">{String(c.effective_date)}</td>
+                          <td className="text-sm text-mute">{c.source ?? '—'}</td>
+                          <td>
+                            {c.currency === 'PKR' ? (
+                              <span className="pill">baseline</span>
+                            ) : age > 30 ? (
+                              <span className="pill warn" title={`${age} days old`}>stale · {age}d</span>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+
+              {fx && fx.current.filter((c: any) => c.currency !== 'PKR').length > 0 && (
+                <div className="btn-row">
+                  <button
+                    className="btn primary"
+                    disabled={fxBusy || !Object.keys(fxDraft).some(k => {
+                      const [code, d] = k.split('|');
+                      const cur = fx.current.find((c: any) => c.currency === code);
+                      return cur && Number(fxDraft[k]) !== Number(cur.rate_to_pkr);
+                    })}
+                    onClick={saveFx}
+                  >
+                    {fxBusy ? 'Saving…' : 'Save rates'}
+                  </button>
+                  <button className="btn ghost" disabled={fxBusy}
+                    onClick={() => { setFxDraft({}); setFxErr(''); setFxMsg(''); }}>
+                    Discard
+                  </button>
+                  <span className="text-sm text-mute">
+                    Each save records a rate effective today; earlier dates are left intact.
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
 
           <div className="btn-row">
             <button className="btn primary" disabled={pending.length === 0 || busy} onClick={save}>
