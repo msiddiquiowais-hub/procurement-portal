@@ -197,8 +197,137 @@ INSERT INTO core.vendors (id, vendor_code, legal_name, ntn, strn, state, created
   -- so decision Q3 — a new vendor is invited and badged "Pending approval",
   -- never blocked — has something real to act on. (V-00083 cannot serve that
   -- role: it is blacklisted, and a blacklisted vendor must never be invited.)
-  ('44444444-4444-4444-4444-444444444406', 'V-00086', 'Crescent Tech Traders',     '6789012-3', '8765432-1', 'Manager_Approved','33333333-3333-3333-3333-33333333330d', NULL, NULL)
+  ('44444444-4444-4444-4444-444444444406', 'V-00086', 'Crescent Tech Traders',     '6789012-3', '8765432-1', 'Manager_Approved','33333333-3333-3333-3333-33333333330d', NULL, NULL),
+  -- ── IT hardware pool ────────────────────────────────────────────────────
+  -- V-00084 is IT_HARDWARE-mapped but its scorecard (B/C/C) puts it in the High
+  -- risk band, and core.fn_vendor_composite blocks it from RFQ rosters. So the
+  -- IT_HARDWARE pool is ONE vendor, while e2e_sourcing needs THREE.
+  --
+  -- These two restore the pool WITHOUT touching the risk system: a blocked
+  -- vendor must stay blocked. Un-scoring KarachiTech would have been the smaller
+  -- edit and would have deleted the only High-risk Active vendor on the estate,
+  -- which is the case the risk UI exists to demonstrate. Adding vendors leaves
+  -- that case intact and makes the shortfall a fact about the data, not a bug.
+  ('44444444-4444-4444-4444-444444444407', 'V-00087', 'Northbridge Technologies',  '7890123-4', '9876543-2', 'Active',           '33333333-3333-3333-3333-33333333330d','33333333-3333-3333-3333-33333333330d', now()),
+  ('44444444-4444-4444-4444-444444444408', 'V-00088', 'Punjab IT Systems',         '8901234-5', '0987654-3', 'Active',           '33333333-3333-3333-3333-33333333330d','33333333-3333-3333-3333-33333333330d', now())
 ON CONFLICT (vendor_code) DO NOTHING;
+
+-- Scorecards and category mappings for the two added vendors. Written as
+-- corrective UPDATEs rather than columns on the INSERT above because that INSERT
+-- ends in ON CONFLICT DO NOTHING: a row that already exists never takes the new
+-- values, so an INSERT-only change would not repair an estate that already
+-- seeded them. Same pattern migration 037 uses.
+--
+-- core.vendors is under the audited-change guard (migration 039): a raw UPDATE is
+-- refused unless it carries app.vendor_change_token, and that token is exactly
+-- how a legitimate change is made to pass WITH a trail rather than around it.
+-- The token is scoped to this block and cleared immediately after, so no later
+-- statement in this seed runs privileged by accident.
+SELECT set_config('app.vendor_change_token', 'seed', false);
+
+-- V-00087 is A/A/B, NOT A/A/A, and that is a correction rather than a stylistic
+-- choice. Migration 036 asserts the estate contains EXACTLY ONE perfect
+-- vendor (A/A/A scoring 100 and graded Low). Giving a second vendor the same
+-- all-As scorecard broke that assertion, and the honest fix is on the data
+-- side: the assertion is a statement about the fixture's shape, and it is not
+-- weakened to accommodate an addition. Nothing depends on V-00087 being
+-- perfect — it needs only to be Active, invitable and category-mapped to do its
+-- job in the IT_HARDWARE pool.
+--
+-- A/A/B still grades Low and is comfortably invitable; the risk system is
+-- untouched and KarachiTech remains the estate's one High-risk Active vendor.
+UPDATE core.vendors SET scorecard = '{"quality":"A","delivery":"A","financial":"B"}'
+ WHERE vendor_code = 'V-00087';
+UPDATE core.vendors SET scorecard = '{"quality":"A","delivery":"B","financial":"A"}'
+ WHERE vendor_code = 'V-00088';
+
+-- risk_score must agree with core.fn_vendor_composite(scorecard) — migration 036
+-- checks the two implementations against each other, and a stale stored score is
+-- exactly the divergence that check exists to catch. Changed together with the
+-- scorecard above, never separately.
+UPDATE core.vendors
+   SET risk_score = c.score
+  FROM (
+    SELECT vv.id, cc.score
+      FROM core.vendors vv
+      CROSS JOIN LATERAL core.fn_vendor_composite(vv.scorecard) AS cc
+  ) AS c
+ WHERE core.vendors.id = c.id
+   AND core.vendors.vendor_code IN ('V-00087','V-00088')
+   AND core.vendors.risk_score IS DISTINCT FROM c.score;
+
+-- Migration 037 asserts every SCORED vendor has a performance record, because a
+-- scored vendor without one renders a dash on the detail screen instead of a
+-- figure. These two were scored in the block above and so need one each.
+-- Values are plausible rather than round: an estate where every on-time rate is
+-- exactly 90% is as obviously synthetic as one where every rate is 0.
+INSERT INTO core.vendor_performance (vendor_id, quarter, on_time_pct, reject_pct, avg_response_hours, score, computed_at)
+SELECT v.id, d.quarter, d.on_time_pct, d.reject_pct, d.avg_response_hours, d.score, now()
+  FROM core.vendors v
+  JOIN (VALUES
+    ('V-00087', '2026-Q3'::text, 91.50,  2.00,  5.20, 84.00::numeric),
+    ('V-00088', '2026-Q3'::text, 87.25,  4.50,  7.80, 79.00::numeric)
+  ) AS d(vendor_code, quarter, on_time_pct, reject_pct, avg_response_hours, score)
+    ON v.vendor_code = d.vendor_code
+ WHERE NOT EXISTS (
+   SELECT 1 FROM core.vendor_performance p
+    WHERE p.vendor_id = v.id AND p.quarter = d.quarter
+ );
+-- Categories for the two added vendors, in the CURRENT vocabulary rather than
+-- the legacy ItemGroup codes (IG-*) that migrations 048/051 still translate.
+-- Migrations 048 and 051 re-run on every `db:migrate` and ON CONFLICT-do their
+-- inserts, so these rows are preserved rather than recreated.
+--
+-- They deliberately mirror V-00081's broad mapping rather than IT_HARDWARE
+-- alone. A test fixture spanning two categories resolves its vendor from the
+-- union of both category pools, and a vendor mapped to only one of them trips
+-- the revoked-history guard ("this vendor has been removed from a category they
+-- had already quoted") on a line they were simply never mapped for. A
+-- generalist profile is also the realistic shape for the supplier this estate
+-- is modelled on.
+UPDATE core.vendors SET preferred_categories =
+  ARRAY['FACILITIES','IT_HARDWARE','OFFICE_SUPPLIES','OTHER']::text[]
+ WHERE vendor_code IN ('V-00087','V-00088')
+   AND (preferred_categories IS DISTINCT FROM ARRAY['FACILITIES','IT_HARDWARE','OFFICE_SUPPLIES','OTHER']::text[]);
+
+-- ── Contact email, or these two vendors are undispatchable ──────────────────
+-- A DEFECT IN THE ORIGINAL ADDITION, found by the Task 4 browser verifier.
+--
+-- Adding V-00087/88 fixed the IT_HARDWARE pool, but migration 037 — which
+-- backfills contact_email for V-00081..86 — does not mention them, because they
+-- did not exist when it ran. So the two vendors added to widen the pool were
+-- the only Active vendors on the estate with NO email on file, which made them
+-- invisible to `DispatchService`: `dispatch()` refuses an RFQ whose roster
+-- contains a vendor with no email, so every RFQ that included one could never
+-- be sent, and the buyer saw "Queued 0 message(s)" with no stated cause.
+--
+-- Widening a vendor pool is not the same as making it usable. A vendor that can
+-- be invited but not contacted is a silent dead end, which is exactly what
+-- core.fn_vendor_email_missing() exists to surface — and it was reporting these
+-- two while nothing said why.
+--
+-- Corrective UPDATE, not the INSERT above, for the same reason the scorecard is
+-- an UPDATE: the INSERT ends in ON CONFLICT DO NOTHING and would not repair an
+-- estate that already seeded them. The `IS DISTINCT FROM` guard keeps a re-run
+-- from writing an unchanged row (and from burning a governed-change audit entry
+-- on every `db:seed`). Inside the change-token window because contact_email is
+-- a governed column under migration 039.
+UPDATE core.vendors SET contact_email = d.email, contact_name = d.contact
+  FROM (VALUES
+    ('V-00087', 'Usman Tariq',  'usman@northbridge.com.pk'),
+    ('V-00088', 'Ayesha Malik', 'ayesha@punjabitsystems.pk')
+  ) AS d(vendor_code, contact, email)
+ WHERE core.vendors.vendor_code = d.vendor_code
+   AND (contact_email IS DISTINCT FROM d.email OR contact_name IS DISTINCT FROM d.contact);
+
+SELECT set_config('app.vendor_change_token', '', false);
+
+INSERT INTO core.vendor_categories (vendor_id, category_id, is_active, created_at, created_by)
+SELECT v.id, c.id, true, now(), '33333333-3333-3333-3333-33333333330d'::uuid
+  FROM core.vendors v
+  JOIN core.categories c ON c.code IN ('FACILITIES','IT_HARDWARE','OFFICE_SUPPLIES','OTHER')
+ WHERE v.vendor_code IN ('V-00087','V-00088')
+ON CONFLICT (vendor_id, category_id) DO NOTHING;
 
 -- ── Supplier logins (must come AFTER the vendors block) ─────────────────────
 -- Wave 4 / migration 028. These two rows are role='vendor' and therefore

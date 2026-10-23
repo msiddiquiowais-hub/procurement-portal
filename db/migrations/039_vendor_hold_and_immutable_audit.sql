@@ -119,54 +119,18 @@ ALTER TABLE audit.audit_log ADD COLUMN IF NOT EXISTS reason text;
 -- (a migration re-asserting a narrower list than a later one guarantees) is
 -- what breaks `db:migrate` on an already-migrated database, so the guard is a
 -- real check rather than a comment.
-CREATE OR REPLACE FUNCTION audit.fn_widen_audit_log_actions() RETURNS void AS $$
-DECLARE
-  canon text[] := ARRAY[
-    'create','update','delete','approve','reject','return','push','reassign',
-    'login','logout','workflow_config_change','pack_freeze','pack_push',
-    'sod_violation','dead_letter',
-    -- Rule 5 additions. Everything above is pre-existing and is repeated here
-    -- deliberately, so this list is a strict superset of migration 007's.
-    'hold','unhold','category_change','vendor_update','d365_vendor_sync',
-    -- Wave 5 Track F: a rate agreed on a phone call, and a line awarded inside a
-    -- comparative statement. Both are commercial decisions a later reader must be
-    -- able to find, so they get their own action rather than hiding inside
-    -- 'update' alongside every incidental column change.
-    'phone_negotiation','cs_line_award'
-  ];
-  canon_literal text;
-  def text;
-  missing text;
-BEGIN
-  -- quote_literal() on a text[] quotes the ARRAY, not each element, so the
-  -- element list has to be assembled one element at a time.
-  SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(canon) AS a;
-
-  SELECT pg_get_constraintdef(oid) INTO def
-    FROM pg_constraint
-   WHERE conname = 'audit_log_action_check' AND conrelid = 'audit.audit_log'::regclass;
-
-  IF def IS NULL THEN
-    EXECUTE 'ALTER TABLE audit.audit_log ADD CONSTRAINT audit_log_action_check '
-            'CHECK (action = ANY(ARRAY[' || canon_literal || ']))';
-    RETURN;
-  END IF;
-
-  -- Substring test per action: parsing the array literal back out of the
-  -- constraint text is fragile, and what matters is only "is every canonical
-  -- action already permitted".
-  SELECT string_agg(a, ', ') INTO missing
-    FROM unnest(canon) AS a
-   WHERE position('''' || a || '''' in def) = 0;
-
-  IF missing IS NULL THEN
-    RETURN;                       -- already a superset; leave it alone
-  END IF;
-
-  EXECUTE 'ALTER TABLE audit.audit_log DROP CONSTRAINT audit_log_action_check';
-  EXECUTE 'ALTER TABLE audit.audit_log ADD CONSTRAINT audit_log_action_check '
-          'CHECK (action = ANY(ARRAY[' || canon_literal || ']))';
-END $$ LANGUAGE plpgsql;
+--
+-- NOTE FOR ANYONE ADDING A NEW ACTION: migrations 041, 042 and 049 each REDEFINE
+-- this whole function, each with a larger `canon` than the last. That used to be
+-- a trap: the function rebuilt the CHECK from its own array alone, so an action
+-- declared by one migration and omitted from the next was silently dropped, and
+-- the rebuilt CHECK then failed on every row already carrying it. Migration 038b
+-- added `repair` and 042 and 049 both aborted with
+-- "check constraint audit_log_action_check ... is violated by some row".
+--
+-- All three copies now rebuild from canon UNION the installed constraint, so the
+-- trap is closed rather than merely documented. Adding an action to one list is
+-- still enough; the union covers the rest.
 
 SELECT audit.fn_widen_audit_log_actions();
 

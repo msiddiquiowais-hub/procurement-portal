@@ -20,14 +20,31 @@
 --
 -- ── WHY THE WHOLE LIST IS RESTATED ──────────────────────────────────────────
 --
--- `fn_widen_audit_log_actions` rebuilds the CHECK from its OWN hardcoded array.
--- It is not additive: it DROPs the constraint and re-adds it from `canon`. So
--- appending three values to the array without restating every earlier action
--- would silently NARROW the vocabulary and start refusing audit rows that
--- Wave 5-F/G/H already write. That exact hazard is what migrations 039, 041 and
--- 042 each document at their own copy of this function.
+-- This file still restates the earlier actions in `canon`. It no longer has to:
+-- the function below rebuilds the CHECK from canon UNION whatever the installed
+-- constraint already permits, so it can only ever widen, whatever list it is
+-- handed and whatever order the migrations run in.
 --
--- The list below is migration 042's verbatim, plus the three new values.
+-- The list is restated anyway because a fresh database has no earlier list to
+-- inherit, and because a reader of this file should be able to see the whole
+-- vocabulary in one place.
+--
+-- WHY THAT MATTERS — the trap this file used to be part of
+-- --------------------------------------------------------
+-- `fn_widen_audit_log_actions` used to rebuild the CHECK from its own array
+-- ALONE (DROP, then re-ADD from `canon`). That made the list a trap: one author
+-- forgetting an action silently NARROWED the vocabulary, and every row already
+-- carrying the forgotten action then failed the new CHECK. It was not
+-- hypothetical. Migration 038b repairs the audit hash chain and records itself
+-- with the action `repair`; 042 and 049 both rebuilt from lists that did not
+-- contain it, and both aborted with
+--
+--     check constraint "audit_log_action_check" of relation "audit_log"
+--     is violated by some row
+--
+-- with each list being perfectly correct in isolation. Migrations 020 and 027
+-- hit this identical defect on proc.purchase_requisitions.status; 019 records
+-- the same lesson — "a fresh db:reset never hit it, which is why it survived."
 
 BEGIN;
 
@@ -44,31 +61,61 @@ DECLARE
     'phone_negotiation','cs_line_award','cs_split_lock',
     'po_generate','po_issue','po_push','po_cancel',
     'd365_master_sync','d365_po_push',
-    'category_enable','category_disable','category_unlink'
+    'category_enable','category_disable','category_unlink',
+    -- 038b repairs the audit hash chain and records that fact in the trail
+    -- itself. The union below would preserve 'repair' anyway; declaring it here
+    -- as well means it is part of the STATED vocabulary rather than something
+    -- this list happens to be carrying.
+    'repair'
   ];
   canon_literal text;
   def text;
-  missing text;
+  permitted text[];
+  merged text[];
 BEGIN
-  SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(canon) AS a;
-
   SELECT pg_get_constraintdef(oid) INTO def
     FROM pg_constraint
    WHERE conname = 'audit_log_action_check' AND conrelid = 'audit.audit_log'::regclass;
 
+  -- No constraint yet (fresh database): create it from this migration's list.
   IF def IS NULL THEN
+    SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(canon) AS a;
     EXECUTE 'ALTER TABLE audit.audit_log ADD CONSTRAINT audit_log_action_check '
             'CHECK (action = ANY(ARRAY[' || canon_literal || ']))';
     RETURN;
   END IF;
 
-  SELECT string_agg(a, ', ') INTO missing
-    FROM unnest(canon) AS a
-   WHERE position('''' || a || '''' in def) = 0;
+  -- What the INSTALLED constraint already permits, read from the CONSTRAINT and
+  -- never from the table. That distinction is load-bearing: an action that was
+  -- never permitted cannot be legitimised here merely because some row happens
+  -- to carry it.
+  SELECT COALESCE(array_agg(DISTINCT m[1] ORDER BY m[1]), ARRAY[]::text[])
+    INTO permitted
+    FROM regexp_matches(def, $q$'([^']+)'$q$, 'g') AS m;
 
-  IF missing IS NULL THEN
-    RETURN;                       -- already a superset; leave it alone
+  -- A definition we cannot read is a definition we must not replace. Refusing
+  -- here is the difference between "widened" and "silently narrowed".
+  IF array_length(permitted, 1) IS NULL THEN
+    RAISE EXCEPTION
+      'fn_widen_audit_log_actions: could not read the permitted action list out of '
+      'audit_log_action_check, so rebuilding it could NARROW the audit vocabulary. '
+      'Refusing to run. Installed definition: %', def;
   END IF;
+
+  -- Nothing to do when this migration's actions are all permitted already. On a
+  -- REPLAY this is the common case, and returning without a DDL round-trip is
+  -- what keeps a re-run from touching the table for nothing.
+  IF NOT EXISTS (SELECT 1 FROM unnest(canon) a WHERE NOT (a = ANY(permitted))) THEN
+    RETURN;
+  END IF;
+
+  -- WIDEN: the union of what is installed and what this migration adds.
+  -- Rebuilding from `canon` ALONE is the bug this replaces - see the header.
+  SELECT COALESCE(array_agg(DISTINCT x ORDER BY x), ARRAY[]::text[])
+    INTO merged
+    FROM unnest(canon || permitted) AS x;
+
+  SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(merged) AS a;
 
   EXECUTE 'ALTER TABLE audit.audit_log DROP CONSTRAINT audit_log_action_check';
   EXECUTE 'ALTER TABLE audit.audit_log ADD CONSTRAINT audit_log_action_check '

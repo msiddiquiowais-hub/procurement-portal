@@ -274,10 +274,14 @@ END $function$;
 -- so it must be as visible as creating one.
 --
 -- This redefines the Track F/G widening with the W5-H actions appended. The
--- whole list is restated because `fn_widen_audit_log_actions` rebuilds the
--- CHECK from its own array; appending here without restating the earlier
--- actions would silently NARROW the vocabulary and start refusing audit rows
--- that previous waves already write.
+-- whole list is still restated, so a fresh database and a reader of this file
+-- both see the entire vocabulary in one place -- but restating it is no longer
+-- load-bearing. `fn_widen_audit_log_actions` rebuilds the CHECK from its own
+-- array UNION whatever the installed constraint already permits, so it can only
+-- widen. It previously rebuilt from its own array ALONE, which made a forgotten
+-- action a silent narrowing: 042 and 049 both aborted on this exact database
+-- after 038b added the action `repair`, because neither list mentioned it and
+-- the rebuilt CHECK then refused the row that carried it.
 CREATE OR REPLACE FUNCTION audit.fn_widen_audit_log_actions()
  RETURNS void
  LANGUAGE plpgsql
@@ -294,27 +298,52 @@ DECLARE
   ];
   canon_literal text;
   def text;
-  missing text;
+  permitted text[];
+  merged text[];
 BEGIN
-  SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(canon) AS a;
-
   SELECT pg_get_constraintdef(oid) INTO def
     FROM pg_constraint
    WHERE conname = 'audit_log_action_check' AND conrelid = 'audit.audit_log'::regclass;
 
+  -- No constraint yet (fresh database): create it from this migration's list.
   IF def IS NULL THEN
+    SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(canon) AS a;
     EXECUTE 'ALTER TABLE audit.audit_log ADD CONSTRAINT audit_log_action_check '
             'CHECK (action = ANY(ARRAY[' || canon_literal || ']))';
     RETURN;
   END IF;
 
-  SELECT string_agg(a, ', ') INTO missing
-    FROM unnest(canon) AS a
-   WHERE position('''' || a || '''' in def) = 0;
+  -- What the INSTALLED constraint already permits, read from the CONSTRAINT and
+  -- never from the table. That distinction is load-bearing: an action that was
+  -- never permitted cannot be legitimised here merely because some row happens
+  -- to carry it.
+  SELECT COALESCE(array_agg(DISTINCT m[1] ORDER BY m[1]), ARRAY[]::text[])
+    INTO permitted
+    FROM regexp_matches(def, $q$'([^']+)'$q$, 'g') AS m;
 
-  IF missing IS NULL THEN
-    RETURN;                       -- already a superset; leave it alone
+  -- A definition we cannot read is a definition we must not replace. Refusing
+  -- here is the difference between "widened" and "silently narrowed".
+  IF array_length(permitted, 1) IS NULL THEN
+    RAISE EXCEPTION
+      'fn_widen_audit_log_actions: could not read the permitted action list out of '
+      'audit_log_action_check, so rebuilding it could NARROW the audit vocabulary. '
+      'Refusing to run. Installed definition: %', def;
   END IF;
+
+  -- Nothing to do when this migration's actions are all permitted already. On a
+  -- REPLAY this is the common case, and returning without a DDL round-trip is
+  -- what keeps a re-run from touching the table for nothing.
+  IF NOT EXISTS (SELECT 1 FROM unnest(canon) a WHERE NOT (a = ANY(permitted))) THEN
+    RETURN;
+  END IF;
+
+  -- WIDEN: the union of what is installed and what this migration adds.
+  -- Rebuilding from `canon` ALONE is the bug this replaces - see the header.
+  SELECT COALESCE(array_agg(DISTINCT x ORDER BY x), ARRAY[]::text[])
+    INTO merged
+    FROM unnest(canon || permitted) AS x;
+
+  SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(merged) AS a;
 
   EXECUTE 'ALTER TABLE audit.audit_log DROP CONSTRAINT audit_log_action_check';
   EXECUTE 'ALTER TABLE audit.audit_log ADD CONSTRAINT audit_log_action_check '

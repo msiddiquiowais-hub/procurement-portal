@@ -121,27 +121,52 @@ DECLARE
   ];
   canon_literal text;
   def text;
-  missing text;
+  permitted text[];
+  merged text[];
 BEGIN
-  SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(canon) AS a;
-
   SELECT pg_get_constraintdef(oid) INTO def
     FROM pg_constraint
    WHERE conname = 'audit_log_action_check' AND conrelid = 'audit.audit_log'::regclass;
 
+  -- No constraint yet (fresh database): create it from this migration's list.
   IF def IS NULL THEN
+    SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(canon) AS a;
     EXECUTE 'ALTER TABLE audit.audit_log ADD CONSTRAINT audit_log_action_check '
             'CHECK (action = ANY(ARRAY[' || canon_literal || ']))';
     RETURN;
   END IF;
 
-  SELECT string_agg(a, ', ') INTO missing
-    FROM unnest(canon) AS a
-   WHERE position('''' || a || '''' in def) = 0;
+  -- What the INSTALLED constraint already permits, read from the CONSTRAINT and
+  -- never from the table. That distinction is load-bearing: an action that was
+  -- never permitted cannot be legitimised here merely because some row happens
+  -- to carry it.
+  SELECT COALESCE(array_agg(DISTINCT m[1] ORDER BY m[1]), ARRAY[]::text[])
+    INTO permitted
+    FROM regexp_matches(def, $q$'([^']+)'$q$, 'g') AS m;
 
-  IF missing IS NULL THEN
-    RETURN;                       -- already a superset; leave it alone
+  -- A definition we cannot read is a definition we must not replace. Refusing
+  -- here is the difference between "widened" and "silently narrowed".
+  IF array_length(permitted, 1) IS NULL THEN
+    RAISE EXCEPTION
+      'fn_widen_audit_log_actions: could not read the permitted action list out of '
+      'audit_log_action_check, so rebuilding it could NARROW the audit vocabulary. '
+      'Refusing to run. Installed definition: %', def;
   END IF;
+
+  -- Nothing to do when this migration's actions are all permitted already. On a
+  -- REPLAY this is the common case, and returning without a DDL round-trip is
+  -- what keeps a re-run from touching the table for nothing.
+  IF NOT EXISTS (SELECT 1 FROM unnest(canon) a WHERE NOT (a = ANY(permitted))) THEN
+    RETURN;
+  END IF;
+
+  -- WIDEN: the union of what is installed and what this migration adds.
+  -- Rebuilding from `canon` ALONE is the bug this replaces - see the header.
+  SELECT COALESCE(array_agg(DISTINCT x ORDER BY x), ARRAY[]::text[])
+    INTO merged
+    FROM unnest(canon || permitted) AS x;
+
+  SELECT string_agg(quote_literal(a), ',') INTO canon_literal FROM unnest(merged) AS a;
 
   EXECUTE 'ALTER TABLE audit.audit_log DROP CONSTRAINT audit_log_action_check';
   EXECUTE 'ALTER TABLE audit.audit_log ADD CONSTRAINT audit_log_action_check '
@@ -187,15 +212,37 @@ BEGIN
     RAISE EXCEPTION 'migration 041: audit_log_action_check does not permit cs_split_lock';
   END IF;
 
-  -- A historical CS can never have been a split: there was no way to record
-  -- one. Anything else here would mean the backfill mislabelled something.
+  -- The assertion that used to live here was "no locked CS is anything but
+  -- SINGLE", justified by "a pre-split CS cannot be one". That premise expired
+  -- the day the SPLIT lock path shipped: lockStatementWithAward() writes
+  -- state='Locked' with award_mode='SPLIT', so a REPLAY of this migration on a
+  -- live database now finds real splits and fails on its own history. A
+  -- migration must not make a statement about the world that its own feature
+  -- makes false.
+  --
+  -- What is true regardless of history is the INVARIANT rather than the
+  -- history: a locked CS that claims SPLIT must actually carry a usable split
+  -- array and must not also name a single winner. That is what the CHECK
+  -- enforces, so asserting it here proves the CHECK holds on every existing
+  -- row — including the ones written after this migration first ran.
+  --
+  -- NULL-safe for the same reason the CHECK is: jsonb_array_length of a
+  -- missing key is SQL NULL, so the bare form would let a malformed row slip
+  -- past the assertion that is supposed to catch it.
   SELECT count(*) INTO locked_splits
     FROM proc.comparative_statements
-   WHERE state = 'Locked' AND award_mode <> 'SINGLE';
+   WHERE state = 'Locked'
+     AND award_mode = 'SPLIT'
+     AND NOT coalesce(
+           jsonb_typeof(coalesce(recommendation -> 'split', 'null'::jsonb)) = 'array'
+           AND jsonb_array_length(recommendation -> 'split') > 0
+           AND NOT coalesce(recommendation ? 'winner_vendor_id', true),
+           false);
 
   IF locked_splits > 0 THEN
     RAISE EXCEPTION
-      'migration 041: % locked CS row(s) are not SINGLE; a pre-split CS cannot be one', locked_splits;
+      'migration 041: % locked CS row(s) claim SPLIT without a usable split array',
+      locked_splits;
   END IF;
 
   -- ── PROVE the CHECK bites, rather than trusting that it does ─────────────
