@@ -32,8 +32,15 @@
                     "e2e:ack":  "node scripts/e2e_ack.mjs",
                     "e2e:capital":  "node scripts/e2e_capital.mjs",
                     "e2e:sourcing":  "node scripts/e2e_sourcing.mjs",
+                    "e2e:sourcing_status":  "node scripts/e2e_sourcing_status.mjs",
+                    "e2e:advance_authz":  "node scripts/e2e_advance_authz.mjs",
+                    "e2e:rfq_reissue":  "node scripts/e2e_rfq_reissue.mjs",
+                    "verify:reissue_ui":  "node scripts/verify_reissue_ui.mjs",
                     "e2e:quotations":  "node scripts/e2e_quotations.mjs",
+                    "e2e:quote_receive":  "node scripts/e2e_quote_receive.mjs",
                     "e2e:sourcing_card":  "node scripts/e2e_sourcing_card.mjs",
+                    "e2e:ready_for_cs":  "node scripts/e2e_ready_for_cs.mjs",
+                    "e2e:warranty_scoring":  "node scripts/e2e_warranty_scoring.mjs",
                     "e2e:cs":  "node scripts/e2e_cs.mjs",
                     "e2e:governance":  "node scripts/e2e_governance.mjs",
                     "e2e:d365":  "node scripts/e2e_d365.mjs",
@@ -68,7 +75,8 @@
                     "prove:wave5l":  "node scripts/prove_w5l_vendor_categories.mjs",
                     "prove:052":  "node scripts/prove_052_free_text.mjs",
                     "verify:052":  "docker exec -i procurement-portal-db psql -U proc -d procurementDB -X -q -v ON_ERROR_STOP=1 -f - \u003c db/scripts/verify_052_free_text.sql",
-                    "verify:pr_new_ui":  "node scripts/verify_pr_new_ui.mjs"
+                    "verify:pr_new_ui":  "node scripts/verify_pr_new_ui.mjs",
+                    "verify:status_ui":  "node scripts/verify_status_ui.mjs"
                 },
     "engines":  {
                     "node":  "\u003e=20.0.0"

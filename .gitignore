@@ -62,3 +62,10 @@ t_err.txt
 /.e2e-*
 /.browser-flow.mjs
 /._*
+
+# db/tmp/ — scratch space for one-off database probes (psql transcripts, ids
+# captured from a live query, trigger dumps). These are debugging residue, not
+# part of the product: they describe ONE database at ONE moment and would be
+# actively misleading to a reader who picked them up as durable artefacts.
+# Anchored with a leading slash so db/scripts/ and db/migrations/ are unaffected.
+/db/tmp/
