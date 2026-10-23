@@ -147,11 +147,34 @@ DECLARE
   missing_keys int;
 BEGIN
   -- ── Part A ──
+  -- The PAIR this migration owns must both sit on the global threshold
+  -- predicates.
+  --
+  -- Scoped to the pair, deliberately. The earlier form counted every step on
+  -- the ladder carrying a global threshold predicate and demanded exactly
+  -- two. Migration 072 later gave mc_approval an `aboveMgtThreshold`
+  -- predicate of its own, which is legitimate -- MC approval above the
+  -- threshold is a real gate -- and from then on the global count was three.
+  --
+  -- What made that fatal on a REPLAY is that this file sets the pair itself:
+  -- it writes `aboveMgtThreshold` onto finance_review and
+  -- `belowMgtThreshold` onto finance_release. So the second time this file
+  -- ran, it put finance_release back onto a threshold predicate while
+  -- mc_approval kept one, and the count became three where two was
+  -- demanded. The migration then failed on any database it had ever created,
+  -- for the presence of a step it does not own.
+  --
+  -- The check below asserts exactly what this migration is responsible for,
+  -- and the complementary-pair assertion that follows it was already scoped
+  -- this way.
   SELECT count(*) INTO n_mgt_steps
     FROM workflow.steps_config
-   WHERE payload->>'when' IN ('aboveMgtThreshold','belowMgtThreshold');
+   WHERE id IN ('finance_review', 'finance_release')
+     AND payload->>'when' IN ('aboveMgtThreshold', 'belowMgtThreshold');
   IF n_mgt_steps <> 2 THEN
-    RAISE EXCEPTION 'migration 035: expected 2 steps on the global threshold predicates, found %', n_mgt_steps;
+    RAISE EXCEPTION
+      'migration 035: expected the finance_review/finance_release pair on the global threshold predicates, found %',
+      n_mgt_steps;
   END IF;
 
   -- The duplicated numbers must be GONE, not merely ignored. A leftover
