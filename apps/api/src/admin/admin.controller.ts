@@ -25,7 +25,34 @@ import type { AuthenticatedUser } from '../auth/auth.service';
 export class AdminController {
   constructor(private readonly svc: AdminService) {}
 
-  // ─── settings ─────────────────────────────────────────────────────────────
+  // â”€â”€â”€ FX rates (the currency master the quotation form reads) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  @Get('fx-rates')
+  async getFxRates(@Req() req: any) {
+    const u = req.user as AuthenticatedUser;
+    return this.svc.getFxRates(u.role);
+  }
+
+  /**
+   * PUT /admin/fx-rates/:currency â€” set the rate that takes effect from a date.
+   *
+   * This is the master the Receive Quotation dropdown reads, so editing a rate
+   * here changes what an officer may quote in, immediately. The write is
+   * APPEND-ONLY by effective_date (the table's own primary key), never an
+   * in-place edit: a quotation already recorded against the old rate keeps the
+   * fx_rate it was written with, so historical totals never silently restate.
+   */
+  @Put('fx-rates/:currency')
+  async putFxRate(
+    @Param('currency') currency: string,
+    @Body() body: { rateToPkr?: number; effectiveDate?: string; source?: string },
+    @Req() req: any,
+  ) {
+    const u = req.user as AuthenticatedUser;
+    return this.svc.putFxRate(currency, body ?? {}, u.role);
+  }
+
+  // â”€â”€â”€ settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   @Get('settings')
   async getSettings(@Req() req: any) {
@@ -34,7 +61,7 @@ export class AdminController {
   }
 
   /**
-   * PATCH /admin/settings — partial update.
+   * PATCH /admin/settings â€” partial update.
    *
    * `mgmtThresholdCr` in the body is routed to workflow.config, NOT to
    * core.settings, so the screen's threshold and the engine's routing decision
@@ -46,7 +73,7 @@ export class AdminController {
     return this.svc.patchSettings(body ?? {}, u.role, u.id);
   }
 
-  // ─── authority matrix ─────────────────────────────────────────────────────
+  // â”€â”€â”€ authority matrix â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   @Get('authority-matrix')
   async getAuthorityMatrix(@Req() req: any) {
@@ -55,7 +82,7 @@ export class AdminController {
   }
 
   /**
-   * PUT /admin/authority-matrix — the whole set, or a refusal.
+   * PUT /admin/authority-matrix â€” the whole set, or a refusal.
    *
    * Rejected when the submitted bands would overlap or leave a gap, because a
    * partial edge edit is the change that silently strands requests.
@@ -66,7 +93,7 @@ export class AdminController {
     return this.svc.putAuthorityMatrix(Array.isArray(body?.bands) ? body.bands : [], u.role, u.id);
   }
 
-  // ─── dimensions ───────────────────────────────────────────────────────────
+  // â”€â”€â”€ dimensions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   @Get('dimensions')
   async getDimensions(@Req() req: any) {
@@ -96,7 +123,7 @@ export class AdminController {
     return this.svc.deleteDimensionValue(key, id, u.role);
   }
 
-  // ─── UOM ──────────────────────────────────────────────────────────────────
+  // â”€â”€â”€ UOM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   @Get('uom')
   async getUoms(@Req() req: any) {
@@ -134,7 +161,7 @@ export class AdminController {
     return this.svc.deleteUom(code, u.role);
   }
 
-  // ─── Line categories ──────────────────────────────────────────────────────────
+  // â”€â”€â”€ Line categories â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Read by the /pr/new dropdown, written only from here or by
   // scripts/import_categories.mjs. See AdminService for why a new row is
   // "selectable" but not yet "routable", and why that is reported rather than
@@ -178,7 +205,7 @@ export class AdminController {
   }
 
   /**
-   * POST /admin/categories/import — bulk load from CSV text.
+   * POST /admin/categories/import â€” bulk load from CSV text.
    *
    * The body carries the raw CSV rather than a multipart upload, so the same
    * endpoint serves a pasted block and a file the browser read as text. That

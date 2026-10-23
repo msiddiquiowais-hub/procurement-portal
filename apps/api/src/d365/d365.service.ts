@@ -527,7 +527,7 @@ export class D365Service {
     const lines = await q<any>(
       `SELECT pl.line_no, i.item_code AS sku, pl.quantity, pl.uom,
               coalesce(split_price.unit_price, single_price.unit_price, pl.unit_price_est) AS unit_price,
-              pl.classification, pl.gl_account, pl.remarks, pl.financial_dimensions
+              pl.classification, pl.useful_life_years, pl.gl_account, pl.remarks, pl.financial_dimensions
          FROM proc.pr_lines pl
          LEFT JOIN core.items i ON i.id = pl.item_id
          LEFT JOIN LATERAL (
@@ -632,6 +632,13 @@ export class D365Service {
         uom: l.uom || null,
         unit_price: Number(l.unit_price || 0),
         classification: l.classification || null,
+        // The depreciation period the ERP is told about. Read from the LINE,
+        // because that is where procurement set it at step 5 — the column
+        // existed, the payload simply never selected it, so every capital line
+        // reached D365 on the 4-year default no matter what life was recorded.
+        useful_life_years: l.useful_life_years === null || l.useful_life_years === undefined
+          ? null
+          : Number(l.useful_life_years),
         gl_account: l.gl_account || null,
         remarks: l.remarks || null,
         financial_dimensions: parseJsonb(l.financial_dimensions) || {},

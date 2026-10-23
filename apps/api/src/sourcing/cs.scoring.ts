@@ -78,22 +78,60 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
  * A criterion with a single distinct value gives everyone 100 — with one bidder
  * there is nothing to be better or worse than. A NULL scores 0 whichever way
  * the axis points, so silence never buys a perfect mark.
+ *
+ * `eligible` decides who is allowed to SET THE SCALE. It defaults to "has a
+ * number", which is right for warranty (0 months is a real, if poor, answer)
+ * and wrong for price.
+ *
+ * WHY PRICE NEEDS ITS OWN RULE. Commercial normalises against
+ * `Math.min(...totals)`. Feed that a vendor whose total is 0 — a missing price,
+ * a placeholder, one of the legacy rows that carry no real figure — and the
+ * floor becomes zero, so that vendor takes the full 100 while every genuine
+ * bidder is squeezed toward 0 for being expensive. The scoring model would
+ * reward the absence of a price, which is the same defect as letting a zero
+ * win the L1 badge in the award matrix.
+ *
+ * So a total <= 0 is DISQUALIFIED: excluded from the min/max range (it cannot
+ * move the floor) and scored 0 in its own right. It is also reported in
+ * `missing`, so the screen can say "no price stated" instead of showing a 0
+ * that reads like a free-of-charge offer.
  */
-function normalise(values: Array<number | null>, lowerIsBetter: boolean): number[] {
-  const present = values.filter((v): v is number => v !== null && Number.isFinite(v));
-  if (present.length === 0) return values.map(() => 0);
+function normalise(
+  values: Array<number | null>,
+  lowerIsBetter: boolean,
+  eligible: (v: number) => boolean = (v) => true,
+): number[] {
+  const usable = values.filter(
+    (v): v is number => v !== null && Number.isFinite(v) && eligible(v),
+  );
+  if (usable.length === 0) return values.map(() => 0);
 
-  const min = Math.min(...present);
-  const max = Math.max(...present);
-  // Everyone quoted the same figure: nothing separates them on this axis.
-  if (min === max) return values.map((v) => (v === null ? 0 : 100));
+  const min = Math.min(...usable);
+  const max = Math.max(...usable);
+  // Everyone who counts quoted the same figure: nothing separates them on this
+  // axis. The ineligible vendors still score 0 — a uniform field is not a
+  // reason to hand out perfect marks to a blank price.
+  if (min === max) return values.map((v) => (v !== null && Number.isFinite(v) && eligible(v) ? 100 : 0));
 
   return values.map((v) => {
-    if (v === null || !Number.isFinite(v)) return 0;   // missing => 0, never 100
+    if (v === null || !Number.isFinite(v) || !eligible(v)) return 0;   // missing/invalid => 0
     // t = 0 at the minimum, 1 at the maximum.
     const t = (v - min) / (max - min);
     return round2((lowerIsBetter ? 1 - t : t) * 100);
   });
+}
+
+/**
+ * A QUOTED AMOUNT MUST BE POSITIVE.
+ *
+ * The single definition shared with the award matrix's L1 rule
+ * (`award.service.ts::isL1Eligible`), so "what counts as a real price" is one
+ * answer in the API rather than one per call site.
+ */
+export function isPriced(amount: number | null): boolean {
+  if (amount === null || amount === undefined) return false;
+  const n = Number(amount);
+  return Number.isFinite(n) && n > 0;
 }
 
 /** Sum the weights so a partial or odd set still lands inside 0..100. */
@@ -105,7 +143,10 @@ function weightSum(w: CsWeights): number {
 export function scoreCs(vendors: ScoredVendorInput[], weights: CsWeights): ScoredVendor[] {
   if (vendors.length === 0) return [];
 
-  const commercial = normalise(vendors.map(v => v.total_amount), true);    // lowest wins
+  // Commercial normalises against the lowest TOTAL, so only a positive total may
+  // set the floor. A zero or negative total is a missing price: it cannot
+  // anchor the scale and it scores 0 (see `normalise`).
+  const commercial = normalise(vendors.map(v => v.total_amount), true, isPriced);   // lowest wins
   const technical = normalise(vendors.map(v => v.lead_time_days), true);   // lowest wins
   const warranty = normalise(vendors.map(v => v.warranty_months), false);  // highest wins
 
@@ -114,6 +155,10 @@ export function scoreCs(vendors: ScoredVendorInput[], weights: CsWeights): Score
     const missing: string[] = [];
     if (v.lead_time_days === null || v.lead_time_days === undefined) missing.push('technical');
     if (v.warranty_months === null || v.warranty_months === undefined) missing.push('warranty');
+    // A blank price is reported as missing for the same reason warranty is:
+    // so the screen can distinguish "offered nothing" from "scored badly",
+    // instead of printing a 0 that reads like a free-of-charge bid.
+    if (!isPriced(v.total_amount)) missing.push('commercial');
 
     const weighted =
       (commercial[i] * weights.commercial +

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { DbService, type SessionContext } from '../db/db.service';
+import { pgArray, pgIntArray } from '../db/pg-array';
 import { roleAllowed } from '@procurement/roles';
 import { rfqStatusView, rfqRollups, subStatus, emptyProcurement, parseJsonb, type RfqStatusView } from './rfq.status';
 
@@ -40,6 +41,46 @@ export const DEFAULT_DEADLINE_DAYS = 7;
 export const RFQ_ISSUE_STAGES = ['IN_PROCUREMENT_REVIEW', 'READY_FOR_D365'];
 
 /**
+ * Stages from which procurement may RE-ISSUE an RFQ — i.e. add a vendor to one
+ * that is already out.
+ *
+ * NARROWER THAN `RFQ_ISSUE_STAGES`, and deliberately so: `IN_PROCUREMENT_REVIEW`
+ * ONLY. This is the chain of custody, and it is not a screen guard.
+ *
+ * Once a PR leaves procurement — a comparative statement exists, a winner has
+ * been selected, the PR has been forwarded to cost centre / finance / D365 —
+ * procurement holds no action rights over it. Adding a vendor then changes the
+ * competition that was already decided, retroactively, with no audit entry from
+ * the authority that owns the document now. That is not a convenience gap; it
+ * is the shape of a vendor-selection fraud, and it is exactly what the workflow
+ * engine's per-stage actor check exists to prevent.
+ *
+ * The supported route for a change after the handoff already exists and is
+ * mandatory: procurement REJECTS the PR with remarks for the audit trail, the
+ * current holder does the same to send it back, and it re-enters
+ * `IN_PROCUREMENT_REVIEW` through the audited workflow — where the new actor is
+ * recorded. Nothing is lost by gating this; the only thing lost is the ability
+ * to change a decided competition in place without anyone else's involvement.
+ *
+ * The prototype already gates it this way (`stage === 'IN_PROCUREMENT_REVIEW'`
+ * in its action bar). An earlier revision of this service widened it to "any
+ * stage where the RFQ is still Open", on the reasoning that a buyer who spots
+ * a vendor drop-out after the PR moved on would otherwise have no action. That
+ * reasoning was wrong: having no action is the control.
+ */
+export const RFQ_REISSUE_STAGES = ['IN_PROCUREMENT_REVIEW'];
+
+/**
+ * The same rule, under the name the quotation path reads it by.
+ *
+ * Recording or revising a vendor quotation is not a different act from adding a
+ * vendor to the roster — both are procurement writing to a live competition
+ * that a finished one would be immune to. One constant, so the two paths cannot
+ * drift apart.
+ */
+export const RFQ_SOURCING_STAGES = RFQ_REISSUE_STAGES;
+
+/**
  * Ceiling on how many vendors ONE RFQ can carry.
  *
  * This is the same limit `POST /rfq/:id/invite` enforces ("at most 12 vendors
@@ -66,24 +107,18 @@ function isoPlusDays(days: number): string {
 /**
  * Normalise a Postgres array aggregate into a real JS array.
  *
- * `array_agg()` does NOT reliably arrive as an array over this driver — an
- * `int4[]` came back as the literal string `'{1,2,3}'`, which made
+ * `array_agg()` does NOT arrive as an array over this driver — an `int4[]`
+ * comes back as the literal string `'{1,2,3}'`, which made
  * `array_agg(...).map(...)` throw a 500 on the first call. Worse, a STRING passed
  * straight through `.join()` would have rendered "{IT_HARDWARE}" in the modal
  * instead of failing, so both ends have to be handled. Typed arrays are only
  * parsed when the driver recognises the OID; the aggregate's type is resolved at
  * runtime, so this cannot be relied on.
+ *
+ * The parse now has ONE owner, `db/pg-array.ts`. This file had its own copy, and
+ * so did auth, quotation and the award-shape builder — four implementations of
+ * one rule, which is how the copy here came to differ from the copy that threw.
  */
-function pgArray(v: unknown): string[] {
-  if (Array.isArray(v)) return v.map(x => String(x));
-  if (typeof v === 'string') {
-    const t = v.trim();
-    if (t.startsWith('{') && t.endsWith('}')) {
-      return t.slice(1, -1).split(',').map(s => s.trim().replace(/^"|"$/g, '')).filter(Boolean);
-    }
-  }
-  return [];
-}
 
 /**
  * The prototype's approved vendor roster: `lightProcVendorPool()` returns
@@ -102,6 +137,60 @@ export const APPROVED_VENDOR_STATES = ['Active', 'Approved'];
 export const EXCLUDED_VENDOR_STATES = ['Rejected', 'Blacklisted', 'Deactivated'];
 
 /**
+ * "This vendor could actually be invited today" — the four eligibility rules as
+ * ONE SQL fragment, for any query that has to decide reachability rather than
+ * report it.
+ *
+ * `categoryPool()` cannot use this: it deliberately SELECTs each rule as its own
+ * column so the refusal reason travels with the row and the modal can explain
+ * itself. That is the reporting shape. This is the asking shape — "is there any
+ * vendor behind this category at all?", which needs one boolean, not four.
+ *
+ * It lives here, next to EXCLUDED_VENDOR_STATES, because a second copy of these
+ * four rules is a second thing to drift: the dropdown would enable a category
+ * whose only vendors the RFQ then refuses, and the buyer would meet a gate with
+ * no visible cause. Aliases required: `v`, `comp`; $1 is the excluded states array.
+ */
+export const INVITABLE_VENDOR_PREDICATE = `
+         NOT v.is_hold
+     AND (v.state <> ALL($1::text[]))
+     AND NOT EXISTS (SELECT 1 FROM core.vendor_blacklist b
+                      WHERE b.vendor_id = v.id AND b.resolved_at IS NULL)
+     AND comp.blocked IS DISTINCT FROM true`;
+
+/**
+ * "This PR line can actually be quoted" — as ONE SQL fragment, for every query
+ * that has to decide which lines will ride the RFQ rather than report on them.
+ *
+ * THREE queries need this answer and they must give the SAME one:
+ *   - `snapshotRfqLines()`        — the rows written to proc.rfq_lines
+ *   - `categoryPool()`            — the categories vendors are matched against
+ *   - `unsourceableCategories()`  — the lines that block Send for want of a vendor
+ *
+ * They did not agree. `snapshotRfqLines()` excluded HELD lines; the other two
+ * only excluded REJECTED ones. So a PR whose every line was held still matched a
+ * full category pool and a healthy vendor roster, and the modal offered "Send RFQ
+ * to 4 vendor(s)" for a document the write could not produce — `issue()` then
+ * refused with a 400 that named no line and no remedy. The preview was
+ * describing an RFQ that did not exist. (PR-2026-201649, 2026-10-11.)
+ *
+ * `pending_qty > 0` is the other half and was already load-bearing in the
+ * snapshot: a STORE_STOCK line with nothing left to buy is not a line to quote.
+ *
+ * `rejected` is now filtered HERE as well as in `categoryPool()`, so all three
+ * queries finally agree: a line the HOD threw out is never written, never
+ * shown as a chip, and never put out for quote. (Aligned 2026-10-11; previously
+ * the snapshot omitted it and 11 live PRs would have quoted rejected lines.)
+ *
+ * Alias required: `pl`. Callers supply their own `pl.pr_id = $n::uuid`.
+ */
+export const RFQ_ELIGIBLE_LINE_PREDICATE = `
+        NOT COALESCE(pl.held, false)
+    AND GREATEST(pl.quantity
+           - CASE WHEN pl.fulfilment_source = 'STORE_STOCK'
+                  THEN COALESCE(pl.store_fulfilled_qty, 0) ELSE 0 END, 0) > 0`;
+
+/**
  * One category-matched vendor, as the pool query returns it.
  *
  * `exclusion_reason` is null exactly when the vendor may be invited. When it is
@@ -116,6 +205,21 @@ export type PoolVendor = {
   risk_grade: string | null;
   risk_score: number | null;
   exclusion_reason: 'vendor_state' | 'blacklisted' | 'risk_blocked' | 'held' | null;
+};
+
+/**
+ * One PR line that cannot ride an RFQ, and why. The counterpart to the
+ * RFQ_ELIGIBLE_LINE_PREDICATE-defined set `snapshotRfqLines()` writes.
+ *
+ * `no_pending_quantity` is a STORE_STOCK line with nothing left to buy — there
+ * is no remainder for a vendor to quote. `rejected` is a line the HOD threw out;
+ * it is recorded here only so the buyer can see it was excluded on purpose
+ * rather than lost. `held` is the one the buyer must act on.
+ */
+export type UnquotableLine = {
+  line_no: number;
+  reason: 'held' | 'rejected' | 'no_pending_quantity';
+  detail: string | null;
 };
 
 /**
@@ -167,6 +271,17 @@ export type IssueRfqInput = {
 
 export type InviteVendorInput = {
   vendorId: string;
+};
+
+/**
+ * Re-issue input. Deliberately narrower than `IssueRfqInput`: a re-issue adds
+ * vendors to an RFQ that already exists, so there is no title, currency or
+ * incoterm to choose — those were fixed at issue and the prototype carries them
+ * across untouched. Only the roster and the deadline can move.
+ */
+export type ReissueRfqInput = {
+  vendorIds?: string[];
+  deadlineAt?: string;
 };
 
 /** SHA-256 of a raw invitation token, hex. The raw token is never stored. */
@@ -322,11 +437,19 @@ export class RfqService {
 
     const invites = await this.db.query<any>(
       `SELECT i.id, i.vendor_id, i.invited_at, i.submitted, i.declined,
-              i.declined_reason,
+              i.declined_reason, i.reissue_no,
               left(i.token_hash, 12) AS token_prefix,
-              v.vendor_code, v.legal_name, v.state AS vendor_state
+              v.vendor_code, v.legal_name, v.state AS vendor_state,
+              -- The re-issue that ADDED this vendor, when one did. NULL for the
+              -- original issue, which is the common case and must stay distinct
+              -- from "we don't know" — hence the equality test on reissue_no
+              -- rather than a NULL timestamp test.
+              rr.reissued_at AS added_at_reissue_no,
+              rr.deadline_after AS added_at_reissue_deadline
          FROM proc.rfq_invitations i
          JOIN core.vendors v ON v.id = i.vendor_id
+         LEFT JOIN proc.rfq_reissues rr
+                ON rr.rfq_id = i.rfq_id AND rr.reissue_no = i.reissue_no
         WHERE i.rfq_id = $1::uuid
         ORDER BY i.invited_at ASC`,
       [id],
@@ -336,9 +459,35 @@ export class RfqService {
     const quotes = await this.db.query<any>(
       `SELECT q.id, q.vendor_id, q.version, q.state, q.total_amount, q.currency,
               q.fx_rate, q.normalized_total_pkr, q.lead_time_days, q.warranty_months,
-              q.taxes_included, q.tax_breakdown, q.validity_days,
+              q.taxes_included, q.tax_breakdown, q.validity_days, q.valid_until,
               q.submitted_at, q.supersedes_quotation_id,
-              v.vendor_code, v.legal_name, v.state AS vendor_state
+              v.vendor_code, v.legal_name, v.state AS vendor_state,
+              -- Warranty is captured PER LINE by the Receive Quotation grid, so
+              -- the header column is NULL for anything recorded through the UI
+              -- and an em-dash is drawn over a warranty that was really given.
+              -- Same fallback award.service.ts:132 uses, plus the MAX so a
+              -- multi-line quote can be shown as the range it is. See the longer
+              -- note on liveQuotes().
+              (SELECT min(ql.warranty_months) FROM proc.quotation_lines ql
+                WHERE ql.quotation_id = q.id AND ql.warranty_months IS NOT NULL) AS line_warranty_min,
+              (SELECT max(ql.warranty_months) FROM proc.quotation_lines ql
+                WHERE ql.quotation_id = q.id AND ql.warranty_months IS NOT NULL) AS line_warranty_max,
+              -- The vendor's OWN document, pinned to THIS version.
+              --
+              -- proc.quotation_attachments exists precisely so an auditor asking
+              -- "what did they actually send on 3 October?" gets the V1 scan and
+              -- not whatever is attached now. A VOIDed document is excluded here
+              -- rather than offered as a view button that 404s: download()
+              -- keeps superseded files readable on purpose, but a voided one is
+              -- retired and must not look available.
+              COALESCE((
+                SELECT jsonb_agg(
+                         jsonb_build_object('id', qa.attachment_id, 'name', ar.name, 'kind', qa.kind)
+                         ORDER BY qa.created_at)
+                  FROM proc.quotation_attachments qa
+                  JOIN core.attachment_registry ar ON ar.id = qa.attachment_id
+                 WHERE qa.quotation_id = q.id AND ar.status <> 'VOID'
+              ), '[]'::jsonb) AS attachments
          FROM proc.quotations q
          JOIN core.vendors v ON v.id = q.vendor_id
         WHERE q.rfq_id = $1::uuid
@@ -368,6 +517,10 @@ export class RfqService {
         // Per-vendor "RFQ issued at" — the prototype's `issuedAtByVendor`
         // falling back to the RFQ-level `issuedAt`.
         issued_at: i.invited_at || rfq.issued_at,
+        // Which re-issue added this vendor, and when. 0 / null = original issue.
+        reissue_no: Number(i.reissue_no || 0),
+        reissued_at: i.reissue_no > 0 ? (i.added_at_reissue_no ?? null) : null,
+        reissued_deadline: i.reissue_no > 0 ? (i.added_at_reissue_deadline ?? null) : null,
         submitted: i.submitted === true,
         declined,
         declined_reason: i.declined_reason,
@@ -430,8 +583,22 @@ export class RfqService {
         amount: Number(q.total_amount),
         currency: q.currency,
         lead_days: q.lead_time_days === null ? null : Number(q.lead_time_days),
-        warranty_months: q.warranty_months === null ? null : Number(q.warranty_months),
+        // Already resolved by liveQuotes(): header, else the floor across the
+        // quote's lines. `warranty_months_max` rides along so the screen can
+        // show "10–12 mo" instead of pretending a range is one number.
+        // Header first, else the floor across the quote's own lines — the
+        // warranty a buyer actually recorded. `…_max` lets the screen show
+        // "10–12 mo" instead of inventing one figure.
+        warranty_months: q.warranty_months === null
+          ? (q.line_warranty_min === null ? null : Number(q.line_warranty_min))
+          : Number(q.warranty_months),
+        warranty_months_max: q.line_warranty_max === null ? null : Number(q.line_warranty_max),
+        warranty_from_lines: q.warranty_months === null && q.line_warranty_min !== null,
         validity_days: q.validity_days === null ? null : Number(q.validity_days),
+        // The recorded expiry date. validity_days is a DURATION and is NULL on
+        // quotes that carry a real valid_until — reporting only the duration is
+        // what drew two em-dashes beside "Valid" for dates that were on file.
+        valid_until: q.valid_until ?? null,
         received_at: q.submitted_at,
         is_new_vendor: !onRoster(q.vendor_state),
         // D5: compliance comes from core.vendor_due_diligence, never assumed.
@@ -462,6 +629,16 @@ export class RfqService {
         created_at: rfq.created_at,
         issued_at: rfq.issued_at,
         issued_by: rfq.issued_by,
+        // The re-issue event. Carried here rather than left to be recomputed
+        // from the roster, because after a top-up the invitation list is
+        // indistinguishable from a first issue to more vendors — `invited_at`
+        // says who was asked, never how many times the ask was repeated.
+        reissue_count: Number(rfq.reissue_count || 0),
+        last_reissued_at: rfq.last_reissued_at,
+        // Never mutated, so it is the only surviving record of the deadline the
+        // competition was FIRST run to — `deadline_at` above is overwritten in
+        // place by every re-issue.
+        initial_deadline_at: rfq.initial_deadline_at ?? null,
         single_source: rfq.single_source,
         single_source_justification: rfq.single_source_justification,
         status: view.label,
@@ -526,7 +703,9 @@ export class RfqService {
         throw new BadRequestException(`PR not ready for RFQ (stage: ${p.status})`);
       }
 
-      // One live RFQ per PR. Re-issuing is `POST /rfq/:id/invite`.
+      // One live RFQ per PR. Re-issuing tops THAT ONE up —
+      // `POST /pr/:id/rfq/reissue` — rather than creating a second RFQ, which
+      // would orphan every quotation already received against this one.
       const existing = await run<any>(
         `SELECT id, rfq_number FROM proc.rfq
           WHERE pr_id = $1::uuid AND state NOT IN ('Cancelled')
@@ -536,8 +715,50 @@ export class RfqService {
       if (existing.rows.length > 0) {
         throw new BadRequestException(
           `PR already has an open RFQ (${existing.rows[0].rfq_number}). ` +
-          `Use POST /rfq/${existing.rows[0].id}/invite to add another vendor.`,
+          `Use POST /pr/${existing.rows[0].id}/invite to add another vendor, ` +
+          `or POST /pr/${prId}/rfq/reissue to add several at once.`,
         );
+      }
+
+      // THE DEAD-END GATE. Checked before the roster is resolved and before the
+      // RFQ row is inserted, so a blocked PR leaves nothing behind to clean up.
+      //
+      // It runs on BOTH paths into this method — a caller naming vendors by hand
+      // gets no exemption, because naming a vendor by hand does not create one
+      // for the MACHINERY line: `insertInvitation()` still refuses a vendor that
+      // is not mapped to it, so the line would be quoted by nobody and fail at
+      // award. The fix is a vendor mapping, and a mapping is not something the
+      // requester's form submission can supply.
+      const unsourceable = await this.unsourceableCategories(run, prId);
+      if (unsourceable.length > 0) {
+        throw new BadRequestException(this.describeUnsourceable(unsourceable));
+      }
+
+      // THE NOTHING-TO-QUOTE GATE. Same placement rule as the dead-end gate above,
+      // and for the same reason — this must run BEFORE the INSERT.
+      //
+      // It used to run after, via snapshotRfqLines()'s return value. That worked
+      // until it didn't: DbService.withTransaction() gives each statement its own
+      // BEGIN/COMMIT, so throwing here rolled back nothing and left the PR
+      // carrying an Open RFQ with no lines and no invitations. Observed on
+      // PR-2026-201649 — RFQ-2026-200616, 0 lines, 0 invitations, 0 audit rows.
+      // The PR could not then be retried: the next attempt failed with "PR
+      // already has an open RFQ", pointing at an RFQ that had never been sent.
+      //
+      // Asking here also means the refusal can NAME the lines, which the
+      // post-hoc count could not do.
+      const unquotable = await this.unquotableLines(run, prId);
+      if (unquotable.length > 0) {
+        const quotable = await run<{ n: number }>(
+          `SELECT count(*)::int AS n
+             FROM proc.pr_lines pl
+            WHERE pl.pr_id = $1::uuid AND pl.rejected = false
+              AND ${RFQ_ELIGIBLE_LINE_PREDICATE}`,
+          [prId],
+        );
+        if (Number(quotable.rows[0]?.n ?? 0) === 0) {
+          throw new BadRequestException(this.describeUnquotable(p.pr_number, unquotable));
+        }
       }
 
       const { vendorIds, shortfall, warnings } = await this.resolveVendors(run, prId, body.vendorIds);
@@ -562,9 +783,9 @@ export class RfqService {
         `INSERT INTO proc.rfq
            (rfq_number, pr_id, created_by_user_id, deadline_at, state,
             single_source, single_source_justification, currency, incoterm,
-            created_at, issued_at, title)
+            created_at, issued_at, title, initial_deadline_at)
          VALUES ($1, $2::uuid, $3::uuid, $4, 'Open',
-                 $5, $6, $7, $8, now(), now(), $9)
+                 $5, $6, $7, $8, now(), now(), $9, $4)
          RETURNING id, rfq_number, issued_at, deadline_at, currency, title`,
         [
           rfqNumber, prId, userId, deadline, body.singleSource === true,
@@ -581,8 +802,16 @@ export class RfqService {
       // rows that were missed, and this closes the door on new RFQs.
       const lineCount = await this.snapshotRfqLines(run, rfq.id, prId);
       if (lineCount === 0) {
+        // Unreachable while the pre-flight gate above is in place — it counts the
+        // same rows with the same predicate. Kept anyway, and kept LOUD, because
+        // this statement sits after the INSERT: if the two ever do disagree, the
+        // RFQ row is already committed and DbService will not roll it back. A
+        // throw here is the last chance to say so in the response rather than
+        // leave a silent orphan for the next attempt to trip over.
         throw new BadRequestException(
-          'this PR has no lines to put on an RFQ — an RFQ must snapshot at least one line',
+          'this PR has no lines to put on an RFQ — an RFQ must snapshot at least one line. ' +
+          `An RFQ row (${rfq.rfq_number}) was created for this attempt and must be ` +
+          'cancelled before the PR can be issued again.',
         );
       }
 
@@ -645,6 +874,22 @@ export class RfqService {
    * Add one more vendor to an open RFQ. The prototype's roster is editable
    * after issue, so this is the supported way to top the roster up to the
    * "Target ≥ 3 per RFQ" the rfq-list KPI advertises.
+   *
+   * THE SAME CHAIN-OF-CUSTODY GATE AS `reissue()`, and it was MISSING HERE.
+   *
+   * `reissue()` is the multi-vendor door; this is the single-vendor one, and
+   * until now it checked only `rfq.state === 'Open'` — never the PR's stage.
+   * Verified live before this fix: on a PR sitting at `QUOTES_RECEIVED`, with
+   * quotes already returned and the competition in progress,
+   * `POST /rfq/:id/invite` returned **201** and appended a fourth vendor to the
+   * roster. Gating only the newer endpoint would have left the identical act
+   * fully open one route over, which is worse than never gating either: the
+   * control would have looked real while being trivially bypassed.
+   *
+   * The rule is the same and the reasoning is the same: the moment a PR leaves
+   * `IN_PROCUREMENT_REVIEW`, the vendor set is a decided competition and the
+   * actor who ran it holds no rights over it. Changes go back through the
+   * audited workflow — reject with remarks, routed back to procurement.
    */
   async invite(
     rfqId: string,
@@ -659,11 +904,25 @@ export class RfqService {
     if (!body?.vendorId) throw new BadRequestException('vendorId is required');
 
     return this.db.withTransaction({ userId, role, costCenterIds }, async (run) => {
+      // Joined to the PR because the gate is on the PR's stage. Before this the
+      // query could not even SEE the stage, so no gate was possible.
       const rfq = await run<any>(
-        `SELECT id, rfq_number, state FROM proc.rfq WHERE id = $1::uuid`,
+        `SELECT rf.id, rf.rfq_number, rf.state, pr.status AS pr_status
+           FROM proc.rfq rf
+           JOIN proc.purchase_requisitions pr ON pr.id = rf.pr_id
+          WHERE rf.id = $1::uuid`,
         [rfqId],
       );
       if (rfq.rows.length === 0) throw new NotFoundException('RFQ not found');
+
+      if (!RFQ_REISSUE_STAGES.includes(rfq.rows[0].pr_status)) {
+        throw new BadRequestException(
+          `RFQ ${rfq.rows[0].rfq_number} cannot take new vendors once the PR has left ` +
+          `${RFQ_REISSUE_STAGES[0]} (stage: ${rfq.rows[0].pr_status}). ` +
+          'Adding a vendor now would change a competition that has already been decided ' +
+          'or forwarded. Reject the PR with remarks to return it to procurement.',
+        );
+      }
       if (rfq.rows[0].state !== 'Open') {
         throw new BadRequestException(
           `RFQ is ${rfq.rows[0].state} — no further invitations can be issued`,
@@ -680,6 +939,295 @@ export class RfqService {
         on_approved_roster: i.on_approved_roster,
         token: i.token,
         accept_path: `/rfq/invite/accept/${i.token}`,
+      };
+    });
+  }
+
+  // ── POST /pr/:id/rfq/reissue ─────────────────────────────────────────────
+  /**
+   * RE-ISSUE — the prototype's "Re-issue RFQ" button, which every branch of the
+   * action bar offers once an RFQ exists (prototype lines 2983 / 2985 / 2989,
+   * all calling the SAME `lightProcIssueRFQ()` the first issue uses).
+   *
+   * A TOP-UP ON THE SAME RFQ. Never a second `proc.rfq` row. The prototype is
+   * explicit about this — `const existingRfqId = hasPriorRfq ? pr.procurement.rfq.id
+   * : 'RFQ-' + pr.id + ...` — because every quotation, every award and every
+   * vendor portal link hangs off that one identifier. Minting a new RFQ here
+   * would orphan the quotes already received against the old one.
+   *
+   * WHY THE STAGE GATE IS TIGHTER THAN issue()'s
+   * ----------------------------------------------
+   * `issue()` keeps `RFQ_ISSUE_STAGES` verbatim from the prototype. A RE-ISSUE
+   * is gated on `RFQ_REISSUE_STAGES` — `IN_PROCUREMENT_REVIEW` only — and this
+   * is the chain of custody, not a usability decision.
+   *
+   * Once a PR leaves procurement (a comparative statement exists, a winner is
+   * chosen, it has been forwarded to cost centre / finance / D365), procurement
+   * holds no write rights over it. Adding a vendor at that point rewrites a
+   * competition that has already been decided, with no involvement from the
+   * authority that now owns the document and no audit entry from it. That is a
+   * vendor-selection fraud shape, and it is precisely what the workflow's
+   * per-stage actor check exists to prevent — this endpoint would have been a
+   * hole straight through it.
+   *
+   * The sanctioned route already exists and is not a workaround: procurement
+   * REJECTS the PR with mandatory remarks, the current holder sends it back,
+   * and it re-enters `IN_PROCUREMENT_REVIEW` through the audited workflow. A
+   * buyer who finds a problem late is not left without recourse — they are
+   * routed through the control.
+   *
+   * An earlier revision of this method deliberately widened the gate to "any
+   * stage where the RFQ is still Open", arguing that a buyer who noticed a
+   * drop-out after the PR moved on would otherwise have no action. That was
+   * wrong, and the owner rejected it: having no action IS the control.
+   *
+   * RE-SELECTING AN EXISTING VENDOR IS A NO-OP, NOT AN ERROR. The prototype
+   * seeds the dialog with `previouslySelected` and lets the officer submit
+   * unchanged; `insertInvitation()` would refuse every one of them with
+   * "already on this RFQ's roster" and roll the whole top-up back. The roster is
+   * therefore diffed here and only genuinely new vendors are invited — which is
+   * also what makes the shared dialog safe to open and close without acting.
+   */
+  async reissue(
+    prId: string,
+    userId: string,
+    role: string,
+    costCenterIds: string[],
+    body: ReissueRfqInput,
+  ) {
+    // rfqIssue()/lightProcIssueRFQ(): "Only Procurement can issue an RFQ."
+    if (!roleAllowed(role, 'procurement')) {
+      throw new ForbiddenException('Only Procurement can re-issue an RFQ.');
+    }
+
+    return this.db.withTransaction({ userId, role, costCenterIds }, async (run) => {
+      // The live rfq — a Cancelled one is not a top-up target, matching the
+      // `state <> 'Cancelled'` rule `issue()` and `sourcing()` both use to
+      // answer "does this PR have an RFQ".
+      //
+      // `deadline_day` is the deadline rendered at DAY granularity in SQL rather
+      // than sliced off a raw timestamptz in JS. See the day-granularity note at
+      // the comparison below for why that difference is load-bearing.
+      const rf = await run<any>(
+        `SELECT rf.id, rf.rfq_number, rf.state, rf.reissue_count,
+                rf.last_reissued_at, pr.pr_number, pr.status AS pr_status,
+                rf.deadline_at,
+                to_char(rf.deadline_at, 'YYYY-MM-DD') AS deadline_day
+           FROM proc.rfq rf
+           JOIN proc.purchase_requisitions pr ON pr.id = rf.pr_id
+          WHERE rf.pr_id = $1::uuid AND rf.state <> 'Cancelled'
+          ORDER BY rf.created_at DESC LIMIT 1`,
+        [prId],
+      );
+      if (rf.rows.length === 0) {
+        // Not a 404: the PR plainly exists, it just has nothing to re-issue.
+        throw new BadRequestException(
+          'this PR has no open RFQ to re-issue — use POST /pr/:id/rfq to issue one first',
+        );
+      }
+      const rfq = rf.rows[0];
+
+      // THE CHAIN-OF-CUSTODY GATE. Checked before anything is resolved or
+      // written, so a refused re-issue leaves no trace at all — not even a
+      // bumped `reissue_count`.
+      //
+      // The message names the sanctioned route on purpose. Telling a buyer
+      // merely "not permitted" invites a workaround; telling them to reject the
+      // PR with remarks tells them the control exists and is the way through.
+      if (!RFQ_REISSUE_STAGES.includes(rfq.pr_status)) {
+        throw new BadRequestException(
+          `RFQ ${rfq.rfq_number} cannot be re-issued once the PR has left ` +
+          `${RFQ_REISSUE_STAGES[0]} (stage: ${rfq.pr_status}). ` +
+          'Adding a vendor now would change a competition that has already been ' +
+          'decided or forwarded. To change it, reject the PR with remarks so it ' +
+          'returns to procurement through the audited workflow.',
+        );
+      }
+
+      if (rfq.state !== 'Open') {
+        throw new BadRequestException(
+          `RFQ ${rfq.rfq_number} is ${rfq.state} — no further invitations can be issued`,
+        );
+      }
+
+      // The roster as it stands. Diffed, not rejected — see the class comment.
+      const onRoster = await run<any>(
+        `SELECT vendor_id FROM proc.rfq_invitations WHERE rfq_id = $1::uuid`,
+        [rfq.id],
+      );
+      const already = new Set(onRoster.rows.map((r: any) => r.vendor_id));
+
+      // `vendorIds` is STRICTLY OPT-IN. Omitting it must add nobody.
+      //
+      // This is not a defensive nicety. `resolveVendors()` falls through to an
+      // automatic pool pick when handed no explicit list — correct for a FIRST
+      // issue, where the pool IS the roster about to be created, and wrong
+      // here: a caller who sends `{ deadlineAt }` alone to push the quote date
+      // out would silently have every eligible vendor on the estate invited to
+      // a live RFQ. Widening a competition is a consequential act and must
+      // never be a side effect of moving a date.
+      //
+      // The prototype's dialog always submits the ticked list, so this costs
+      // the real UI nothing — and it keeps the deadline-only top-up honest.
+      const named = body.vendorIds && body.vendorIds.length ? body.vendorIds : undefined;
+      const { vendorIds, warnings } = named
+        ? await this.resolveVendors(run, prId, named)
+        : { vendorIds: [] as string[], warnings: [] as string[] };
+      const fresh = vendorIds.filter((id) => !already.has(id));
+
+      // The deadline may legitimately be the ONLY thing that changes: the
+      // prototype's dialog carries the date over and lets the officer push it
+      // out.
+      //
+      // COMPARED AT DAY GRANULARITY, and this is a bug that shipped once.
+      // The shared dialog edits a `<input type="date">`, so its unit of change
+      // is a calendar DAY and it round-trips as `yyyy-mm-dd` — midnight. The
+      // first issue had stored `created_at + 7 days`, i.e. a deadline carrying
+      // the clock time it was created at. Comparing that stored timestamp
+      // against the submitted midnight found them different EVERY time, so
+      // "add one vendor and press Send" silently rewrote the deadline from
+      // 2026-10-18 11:05 to 2026-10-18 00:00. The buyer never touched the
+      // field. The vendor's "Due" date in the dispatch email moved, and
+      // `deadline_extended` reported a change that nobody made.
+      //
+      // `resolveDeadline()` is called ONLY when the day really differs, which
+      // also matters for its 24h-from-now floor: a stored deadline that has
+      // since passed would be rejected outright, making an expired-but-open
+      // RFQ impossible to top up — the exact case a top-up exists for.
+      const requestedDay = (body.deadlineAt || '').slice(0, 10);
+      const deadlineMoved = Boolean(requestedDay) && requestedDay !== rfq.deadline_day;
+      const nextDeadline = deadlineMoved ? this.resolveDeadline(body.deadlineAt) : null;
+
+      // Refuse rather than silently do nothing. A re-issue that adds no vendor
+      // and moves no date would still bump `reissue_count`, and the "Re-issued
+      // xN" chip on the PR grid would then assert a sourcing event that never
+      // happened.
+      if (fresh.length === 0 && !deadlineMoved) {
+        throw new BadRequestException(
+          already.size === 0
+            ? 'nothing to re-issue: this RFQ has no vendors on its roster'
+            : `nothing to re-issue: every selected vendor is already on ${rfq.rfq_number}'s roster ` +
+              'and the quote deadline is unchanged. Pick at least one new vendor, or set a different deadline.',
+        );
+      }
+
+      const invitations = [];
+      // The number this re-issue will BE. Read before the UPDATE below bumps
+      // `reissue_count`, so the invitations, the history row and the counter all
+      // agree on one ordinal instead of each deriving its own.
+      const reissueNo = Number(rfq.reissue_count || 0) + 1;
+      for (const vendorId of fresh) {
+        invitations.push(await this.insertInvitation(run, rfq.id, vendorId, reissueNo));
+      }
+
+      // The event stamp. Inside the same transaction as the invitations, so a
+      // failed invite cannot leave the RFQ claiming a re-issue that added nobody.
+      // The CHECK rfq_reissue_stamp_consistent holds because count and stamp
+      // move together on one row.
+      const upd = await run<any>(
+        `UPDATE proc.rfq
+            SET reissue_count    = reissue_count + 1,
+                last_reissued_at = now(),
+                deadline_at      = COALESCE($2::timestamptz, deadline_at)
+          WHERE id = $1::uuid
+        RETURNING reissue_count, last_reissued_at, deadline_at`,
+        [rfq.id, nextDeadline],
+      );
+      const after = upd.rows[0];
+
+      // ── THE HISTORY ROW ──────────────────────────────────────────────────
+      // `proc.rfq` keeps only the CURRENT deadline; the UPDATE above has just
+      // overwritten the one the buyer was originally working to. This row is the
+      // only place that value survives, which is what lets the detail page show
+      // "issued / deadline A | re-issued / deadline B" rather than just B.
+      await run(
+        `INSERT INTO proc.rfq_reissues
+           (rfq_id, reissue_no, reissued_at, deadline_before, deadline_after,
+            vendors_added, actor_user_id)
+         VALUES ($1::uuid, $2::int, $3::timestamptz, $4::timestamptz, $5::timestamptz,
+                 $6::int, $7::uuid)`,
+        [rfq.id, reissueNo, after.last_reissued_at, rfq.deadline_at,
+         after.deadline_at, fresh.length, userId],
+      );
+
+      // ── THE AUDIT ROW ────────────────────────────────────────────────────
+      // proc.rfq carries no audit trigger, so without this the re-issue updated
+      // reissue_count and last_reissued_at and left NOTHING in audit.audit_log.
+      // That is the one event on this document which changes who is competing
+      // against whom, and it was the one event with no trail.
+      //
+      // Placed after every gate: the chain-of-custody refusal and the
+      // nothing-to-do refusal both throw earlier, so neither can leave an audit
+      // row for an action that did not happen.
+      await run(
+        `INSERT INTO audit.audit_log
+           (actor_user_id, entity, entity_id, action, before, after, reason)
+         VALUES ($1::uuid, 'proc.rfq', $2::uuid, 'rfq_reissue', $3::jsonb, $4::jsonb, $5)`,
+        [
+          userId, rfq.id,
+          JSON.stringify({
+            deadline_at: rfq.deadline_at,
+            reissue_count: Number(rfq.reissue_count || 0),
+            last_reissued_at: rfq.last_reissued_at,
+          }),
+          JSON.stringify({
+            rfq_number: rfq.rfq_number,
+            pr_number: rfq.pr_number,
+            reissue_no: reissueNo,
+            reissue_count: Number(after.reissue_count),
+            reissued_at: after.last_reissued_at,
+            deadline_at: after.deadline_at,
+            deadline_extended: deadlineMoved,
+            vendors_added: fresh.length,
+            roster_size: already.size + fresh.length,
+          }),
+          `RFQ ${rfq.rfq_number} re-issued (re-issue #${reissueNo}): ` +
+            `${fresh.length} vendor(s) added` +
+            (deadlineMoved ? ', quote deadline extended' : ', deadline unchanged'),
+        ],
+      );
+
+      return {
+        // `mode` is what the shared dialog reads to render "Re-issue RFQ"
+        // instead of "Issue RFQ" without the client having to infer it from the
+        // absence of an id.
+        mode: 'reissue' as const,
+        rfq: {
+          id: rfq.id,
+          rfq_number: rfq.rfq_number,
+          pr_id: prId,
+          pr_number: rfq.pr_number,
+          title: null,
+          state: rfq.state,
+          currency: null,
+          deadline_at: after.deadline_at,
+          issued_at: null,
+          reissue_count: Number(after.reissue_count),
+          last_reissued_at: after.last_reissued_at,
+        },
+        added: fresh.length,
+        already_on_roster: already.size,
+        deadline_extended: deadlineMoved,
+        invitations: invitations.map((i: any) => ({
+          invitation_id: i.invitation_id,
+          vendor_id: i.vendor_id,
+          vendor_code: i.vendor_code,
+          vendor_name: i.vendor_name,
+          invited_at: i.invited_at,
+          on_approved_roster: i.on_approved_roster,
+          // DELIVERED ONCE, exactly as on the first issue. Only sha256 is stored.
+          token: i.token,
+          accept_path: `/rfq/invite/accept/${i.token}`,
+        })),
+        // The prototype's pushEvent() line, rebuilt from real data.
+        event: {
+          action: 'RFQ re-issued',
+          detail:
+            `${rfq.rfq_number} re-issued (re-issue #${Number(after.reissue_count)}) — ` +
+            `${fresh.length} vendor${fresh.length === 1 ? '' : 's'} added` +
+            (deadlineMoved ? ', quote deadline extended' : ''),
+        },
+        ...(warnings.length ? { warnings } : {}),
       };
     });
   }
@@ -773,6 +1321,14 @@ export class RfqService {
           issuedAt: detail.rfq.issued_at,
           issuedAtByVendor,
           deadline: detail.rfq.deadline_at,
+          // ── THE RE-ISSUE STORY, SIDE BY SIDE WITH THE ORIGINAL ──────────────
+          // `initial_deadline_at` is never mutated, so it is the only surviving
+          // record of the date the competition was originally run to. The detail
+          // page shows it beside `deadline`, because a re-issue moves the live
+          // deadline in place and the original is otherwise unrecoverable.
+          initialDeadline: detail.rfq.initial_deadline_at ?? null,
+          reissueCount: Number(detail.rfq.reissue_count || 0),
+          lastReissuedAt: detail.rfq.last_reissued_at ?? null,
           state: detail.rfq.state,
           notes: null,
           notesByVendor: null,
@@ -801,8 +1357,48 @@ export class RfqService {
       `SELECT DISTINCT ON (q.vendor_id)
               q.id, q.vendor_id, q.version, q.state, q.total_amount, q.currency,
               q.normalized_total_pkr, q.lead_time_days, q.warranty_months,
-              q.validity_days, q.submitted_at, q.quote_mode, q.taxes_included,
-              v.vendor_code, v.legal_name, v.state AS vendor_state
+              q.validity_days, q.valid_until, q.submitted_at, q.quote_mode, q.taxes_included,
+              v.vendor_code, v.legal_name, v.state AS vendor_state,
+              -- WARRANTY IS USUALLY RECORDED PER LINE, NOT ON THE HEADER.
+              --
+              -- The procurement "Receive Quotation" grid collects a warranty cell
+              -- per line and sends it inside the lines array; nothing ever sends a
+              -- header warrantyMonths. So proc.quotations.warranty_months is NULL
+              -- for every quote recorded through the UI, while the data a buyer
+              -- actually entered sits in proc.quotation_lines. Measured on this
+              -- estate: 300 of 1408 quote lines carry a line warranty with a NULL
+              -- header.
+              --
+              -- Every read path that rendered the header column therefore drew an
+              -- em-dash over a warranty that HAD been captured — which reads as
+              -- "this vendor offers no warranty", the exact opposite of the truth,
+              -- and is commercially dangerous: a real 10-month warranty scoring
+              -- zero is a vendor losing an award they qualified for.
+              --
+              -- award.service.ts:132 already resolves this with
+              -- line_warranty_months ?? warranty_months. This does the same, and
+              -- additionally returns the MAX so the UI can show the true range
+              -- instead of silently picking one number when lines differ.
+              (SELECT min(ql.warranty_months) FROM proc.quotation_lines ql
+                WHERE ql.quotation_id = q.id AND ql.warranty_months IS NOT NULL) AS line_warranty_min,
+              (SELECT max(ql.warranty_months) FROM proc.quotation_lines ql
+                WHERE ql.quotation_id = q.id AND ql.warranty_months IS NOT NULL) AS line_warranty_max,
+              -- The vendor's own document, pinned to THIS version.
+              --
+              -- proc.quotation_attachments exists precisely so an auditor asking
+              -- "what did they actually send?" gets the scan that was quoted, not
+              -- whatever was attached later. A VOIDed document is excluded rather
+              -- than offered as a View button that 404s — download() keeps a
+              -- SUPERSEDED file readable on purpose, but a voided one is retired
+              -- and must not look available.
+              COALESCE((
+                SELECT jsonb_agg(
+                         jsonb_build_object('id', qa.attachment_id, 'name', ar.name, 'kind', qa.kind)
+                         ORDER BY qa.created_at)
+                  FROM proc.quotation_attachments qa
+                  JOIN core.attachment_registry ar ON ar.id = qa.attachment_id
+                 WHERE qa.quotation_id = q.id AND ar.status <> 'VOID'
+              ), '[]'::jsonb) AS attachments
          FROM proc.quotations q
          JOIN core.vendors v ON v.id = q.vendor_id
         WHERE q.rfq_id = $1::uuid
@@ -829,10 +1425,27 @@ export class RfqService {
         // v2.0.x-audit-rules rule was blanking the Unit column to avoid.
         total: Number(q.total_amount),
         total_currency: q.currency,
+        // No unit price is invented here — for a grand-total quote none exists.
+        // The Unit column was removed from the card entirely (owner decision);
+        // per-line prices live in the Versions Panel.
         unit_price: null,
         lead_time_days: q.lead_time_days === null ? null : Number(q.lead_time_days),
-        warranty_months: q.warranty_months === null ? null: Number(q.warranty_months),
+        // Header first, then the lines the quote really was recorded against —
+        // see the SELECT for why the header is usually NULL. `…_max` is exposed
+        // so a caller can show the range rather than an invented single figure.
+        warranty_months: q.warranty_months === null
+          ? (q.line_warranty_min === null ? null : Number(q.line_warranty_min))
+          : Number(q.warranty_months),
+        warranty_months_max: q.line_warranty_max === null
+          ? null
+          : Number(q.line_warranty_max),
+        warranty_from_lines: q.warranty_months === null && q.line_warranty_min !== null,
         valid_until_days: q.validity_days === null ? null : Number(q.validity_days),
+        // The recorded expiry date. `validity_days` is a DIFFERENT thing — a
+        // duration — and it is NULL on quotes that carry a real `valid_until`.
+        // Reporting only the duration is why the RFQ screen showed two em-dashes
+        // beside "Valid" for quotes whose validity date was on file all along.
+        valid_until: q.valid_until ?? null,
         received_at: q.submitted_at,
         quote_mode: q.quote_mode,
         taxes_included: q.taxes_included,
@@ -840,6 +1453,18 @@ export class RfqService {
         // the "Pending approval" badge. Off the approved roster => pending.
         is_new_vendor: !onRoster,
         on_approved_roster: onRoster,
+        // Always an array, never null: "no document on this version" and "the
+        // payload did not carry attachments" must not render the same.
+        //
+        // parseJsonb, NOT Array.isArray — see shapeQuote. A jsonb column crosses
+        // the psql CSV bridge as a STRING, so an isArray test is always false
+        // and the View button would be disabled on rows that do have a document.
+        attachments: (() => {
+          const parsed = parseJsonb(q.attachments);
+          return Array.isArray(parsed)
+            ? parsed.map((a: any) => ({ id: a.id, name: a.name, kind: a.kind }))
+            : [];
+        })(),
       };
     });
   }
@@ -985,7 +1610,17 @@ export class RfqService {
                 ) AS pending_qty
            FROM proc.pr_lines pl
           WHERE pl.pr_id = $2::uuid
-            AND NOT COALESCE(pl.held, false)
+            -- The ONE definition of "this line can be quoted". The roster in the
+            -- modal and the dead-end gate both read it, so the three cannot
+            -- disagree about which lines this RFQ will carry.
+            AND ${RFQ_ELIGIBLE_LINE_PREDICATE}
+            -- Rejected lines are NEVER snapshotted. A rejected line was thrown
+            -- out by the HOD; copying it onto an RFQ puts it out for quote to
+            -- vendors who have no business pricing it. categoryPool() and
+            -- unsourceableCategories() have always filtered it, so this is
+            -- where the write finally caught up with the preview — 11 PRs at
+            -- IN_PROCUREMENT_REVIEW held lines that would have gone out this way.
+            AND pl.rejected = false
        ),
        excluded AS (
          -- A STORE_STOCK line with a pending REMAINDER still belongs on the RFQ
@@ -997,6 +1632,8 @@ export class RfqService {
          INSERT INTO proc.rfq_line_exclusions (rfq_id, pr_line_id, line_no, reason, quantity)
          SELECT $1::uuid, pl.id, pl.line_no,
                 CASE
+                  WHEN COALESCE(pl.rejected, false)
+                    THEN 'rejected' || COALESCE(' — ' || NULLIF(btrim(pl.rejected_reason), ''), '')
                   WHEN COALESCE(pl.held, false)
                     THEN 'held' || COALESCE(' — ' || NULLIF(btrim(pl.held_reason), ''), '')
                   WHEN GREATEST(pl.quantity
@@ -1008,7 +1645,13 @@ export class RfqService {
                 pl.quantity
            FROM proc.pr_lines pl
           WHERE pl.pr_id = $2::uuid
-            AND ( COALESCE(pl.held, false)
+            -- Every line that did NOT make it onto the RFQ is recorded here, with
+            -- the reason. A rejected line must appear too: dropping it silently
+            -- would leave the buyer unable to tell "excluded on purpose" apart
+            -- from "lost". rfq_line_exclusions has no CHECK on reason, so the
+            -- vocabulary is open — this row is the record.
+            AND ( COALESCE(pl.rejected, false)
+                  OR COALESCE(pl.held, false)
                   OR GREATEST(pl.quantity
                       - CASE WHEN pl.fulfilment_source = 'STORE_STOCK'
                              THEN COALESCE(pl.store_fulfilled_qty, 0) ELSE 0 END, 0) = 0 )
@@ -1024,7 +1667,9 @@ export class RfqService {
          FROM eligible e
          JOIN proc.pr_lines pl ON pl.id = e.id
          LEFT JOIN core.items it ON it.id = pl.item_id
-        WHERE e.pending_qty > 0
+        -- No pending_qty filter here: RFQ_ELIGIBLE_LINE_PREDICATE already
+        -- guarantees pending_qty > 0, and a second copy of that rule in the same
+        -- statement is a second thing that can drift from the first.
         ON CONFLICT (rfq_id, line_no) DO NOTHING
        RETURNING 1 AS inserted`,
       [rfqId, prId],
@@ -1043,6 +1688,16 @@ export class RfqService {
     run: <U = any>(sql: string, params?: any[]) => Promise<{ rows: U[]; rowCount: number }>,
     rfqId: string,
     vendorId: string,
+    /**
+     * Which re-issue created this invitation. 0 = the original issue.
+     *
+     * Recorded here rather than derived from `invited_at > issued_at` because
+     * that comparison is worthless in practice: every invitation, including the
+     * very first, is stamped microseconds after `issued_at`. Measured — 1582 of
+     * 1582 invitations on this database are "after" their RFQ's issue stamp.
+     * Only the caller knows, so only the caller says.
+     */
+    reissueNo = 0,
   ) {
     const v = await run<any>(
       `SELECT v.id, v.vendor_code, v.legal_name, v.state, v.is_hold, v.hold_reason,
@@ -1104,11 +1759,12 @@ export class RfqService {
       // than a second copy here that could drift.
       const r = await run<any>(
         `INSERT INTO proc.rfq_invitations
-           (rfq_id, vendor_id, invited_at, token_hash, submitted, declined, expires_at)
+           (rfq_id, vendor_id, invited_at, token_hash, submitted, declined, expires_at, reissue_no)
          VALUES ($1::uuid, $2::uuid, now(), $3, false, false,
-                 now() + (core.fn_vendor_token_ttl_hours() || ' hours')::interval)
-         RETURNING id, invited_at, expires_at`,
-        [rfqId, vendorId, hashToken(token)],
+                 now() + (core.fn_vendor_token_ttl_hours() || ' hours')::interval,
+                 $4::int)
+         RETURNING id, invited_at, expires_at, reissue_no`,
+        [rfqId, vendorId, hashToken(token), reissueNo],
       );
       return {
         invitation_id: r.rows[0].id,
@@ -1116,6 +1772,7 @@ export class RfqService {
         vendor_code: vendor.vendor_code,
         vendor_name: vendor.legal_name,
         invited_at: r.rows[0].invited_at,
+        reissue_no: Number(r.rows[0].reissue_no),
         on_approved_roster: APPROVED_VENDOR_STATES.includes(vendor.state),
         token,
       };
@@ -1265,6 +1922,202 @@ export class RfqService {
    * `rfqCandidates()` and `resolveVendors()` both call THIS, so the roster the
    * procurement officer is shown can never disagree with the one that is sent.
    */
+  /**
+   * The PR's line categories that NO vendor can be invited from.
+   *
+   * This is the black hole, stated as a query. A line's category is the only
+   * thing that decides who is asked to quote it, so a category with no
+   * invitable vendor behind it means that line is carried onto the RFQ, is
+   * never quoted, and fails at AWARD time — weeks later, in a different screen,
+   * with the original mistake untraceable. Nothing in between complains: the
+   * roster looks healthy because the OTHER lines have vendors.
+   *
+   * "No invitable vendor" is deliberately wider than "no vendor". A category
+   * whose only mappings are High-risk, on hold or blacklisted is exactly as
+   * unsourceable as one with nobody mapped at all, and `insertInvitation()`
+   * would refuse those names anyway — so they cannot be invited by hand to
+   * rescue the line. Both are reported, distinguished, because the fix differs:
+   * map a vendor, versus fix the vendor that is mapped.
+   *
+   * Only lines that can actually ride the RFQ are counted, via
+   * RFQ_ELIGIBLE_LINE_PREDICATE — the same fragment `snapshotRfqLines()` writes
+   * with. A held line is never carried onto the RFQ, so a held line in an
+   * unsourceable category must NOT block Send: doing so sends the buyer to
+   * Vendor Master to repair a mapping for a line nobody will ever be asked to
+   * quote. That was the same preview/write disagreement as `categoryPool()`.
+   *
+   * Rejected lines are excluded here, in `categoryPool()` and in
+   * `snapshotRfqLines()` alike, so all three read the same predicate. A rejected
+   * line reaches no vendor and blocks no send. (Aligned 2026-10-11.)
+   */
+  private async unsourceableCategories(
+    run: <U = any>(sql: string, params?: any[]) => Promise<{ rows: U[]; rowCount: number }>,
+    prId: string,
+  ): Promise<Array<{ code: string; name: string; lineNos: number[]; mappedCount: number }>> {
+    const r = await run<any>(
+      `SELECT pl.category AS code,
+              c.name,
+              array_agg(pl.line_no ORDER BY pl.line_no) AS line_nos,
+              -- How many vendors ARE mapped, so the message can tell "nobody is
+              -- mapped" apart from "everyone mapped is blocked".
+              (SELECT count(*)::int
+                 FROM core.vendor_categories vc2
+                 JOIN core.vendors v2 ON v2.id = vc2.vendor_id
+                WHERE vc2.category_id = c.id AND vc2.is_active) AS mapped_count
+         FROM proc.pr_lines pl
+         JOIN core.categories c ON c.code = pl.category
+         -- LEFT LATERAL + HAVING is the whole trick: it keeps every category in
+         -- the result and then drops the ones where the subquery found nothing.
+         -- An INNER JOIN or a WHERE NOT EXISTS would both work, but this reads
+         -- as the question it is ("which of these have nobody behind them?").
+         LEFT JOIN LATERAL (
+           SELECT 1 AS invitable
+             FROM core.vendor_categories vc
+             JOIN core.vendors v ON v.id = vc.vendor_id
+             CROSS JOIN LATERAL core.fn_vendor_composite(v.scorecard) AS comp
+            WHERE vc.category_id = c.id
+              AND vc.is_active
+              AND ${INVITABLE_VENDOR_PREDICATE}
+            LIMIT 1
+         ) AS probe ON true
+        WHERE pl.pr_id = $2::uuid AND pl.rejected = false
+         AND ${RFQ_ELIGIBLE_LINE_PREDICATE}
+        GROUP BY pl.category, c.name, c.id
+       HAVING count(probe.invitable) = 0
+        ORDER BY pl.category`,
+      [`{${EXCLUDED_VENDOR_STATES.join(',')}}`, prId],
+    );
+    return r.rows.map((x: any) => ({
+      code: x.code,
+      name: x.name,
+      lineNos: pgIntArray(x.line_nos),
+      mappedCount: Number(x.mapped_count ?? 0),
+    }));
+  }
+
+  /**
+   * The refusal text, shared by the API and the modal's copy.
+   *
+   * It names the lines, because "cannot issue an RFQ" is not actionable and
+   * "line 3 is Machinery / plant, which has no vendor" is.
+   */
+  private describeUnsourceable(
+    unsourceable: Array<{ name: string; lineNos: number[]; mappedCount: number }>,
+  ): string {
+    const rows = unsourceable
+      .map(u =>
+        `line ${u.lineNos.join(', ')} (${u.name}) has no vendor mapped to it` +
+        (u.mappedCount > 0
+          ? ` — all ${u.mappedCount} mapped vendor(s) are blocked from invitation`
+          : ''))
+      .join('; ');
+    return (
+      `This PR cannot be issued an RFQ yet: ${rows}. ` +
+      'Map an eligible vendor to the category, or change the line\'s category / remove the line. ' +
+      'A line with no reachable vendor would go onto the RFQ, never be quoted, and fail at award.'
+    );
+  }
+
+  /**
+   * The PR's lines that CANNOT ride an RFQ, and why — the complement of
+   * RFQ_ELIGIBLE_LINE_PREDICATE.
+   *
+   * `issue()` used to discover this only AFTER inserting the RFQ row, by
+   * snapshoting and counting what came back. That had two consequences, both
+   * observed live on PR-2026-201649:
+   *
+   *   1. The buyer got `HTTP 400: this PR has no lines to put on an RFQ`. True,
+   *      and useless: it named no line, no reason and no remedy, on a modal that
+   *      had just told them four vendors were matched and ready to send.
+   *   2. The RFQ row survived the failure. `DbService.withTransaction()` issues
+   *      each statement in its OWN BEGIN/COMMIT, so the throw rolled nothing
+   *      back. The PR was left carrying an Open RFQ with 0 lines, 0 invitations
+   *      and 0 audit rows — and the retry then failed differently, with "PR
+   *      already has an open RFQ".
+   *
+   * Asking the question up front fixes both: the gate can run before the INSERT,
+   * and the refusal can name the lines.
+   *
+   * `rejected` lines are INCLUDED: they are unquotable too, and leaving them
+   * out would report "lines 1, 2 held" for a PR whose real position is "lines
+   * 1, 2 held and lines 3, 4 rejected" — a different thing for the buyer to go
+   * and do about.
+   */
+  private async unquotableLines(
+    run: <U = any>(sql: string, params?: any[]) => Promise<{ rows: U[]; rowCount: number }>,
+    prId: string,
+  ): Promise<UnquotableLine[]> {
+    const r = await run<any>(
+      `SELECT pl.line_no,
+              CASE
+                WHEN COALESCE(pl.rejected, false) THEN 'rejected'
+                WHEN COALESCE(pl.held, false)    THEN 'held'
+                ELSE 'no_pending_quantity'
+              END AS reason,
+              NULLIF(btrim(COALESCE(pl.held_reason, pl.rejected_reason, '')), '') AS detail
+         FROM proc.pr_lines pl
+        WHERE pl.pr_id = $1::uuid
+          -- NOT "rejected = false" here. Rejected lines are exactly the ones that
+          -- are NOT quotable, so filtering them out would hide the very rows this
+          -- exists to explain.
+          AND NOT (${RFQ_ELIGIBLE_LINE_PREDICATE} AND pl.rejected = false)
+        ORDER BY pl.line_no`,
+      [prId],
+    );
+    return r.rows.map((x: any) => ({
+      line_no: Number(x.line_no),
+      reason: x.reason === 'rejected' ? 'rejected' : x.reason === 'held' ? 'held' : 'no_pending_quantity',
+      detail: x.detail ?? null,
+    }));
+  }
+
+  /**
+   * The refusal text for a PR with nothing quotable on it, in the same
+   * name-the-line spirit as `describeUnsourceable()`.
+   *
+   * The remedy has to be TRUE, and that constrains it. There is no endpoint that
+   * releases a held PR LINE — `hold`/`unhold` exist for vendors only
+   * (`POST /vendors/:id/unhold`), and the HOD's per-line disposition controls
+   * are only live while the PR sits at IN_HOD_REVIEW
+   * (`canAct = pr?.status === 'IN_HOD_REVIEW'`). So by the time procurement sees
+   * this, the hold cannot be lifted from this screen. The sanctioned route is to
+   * send the PR back through the audited workflow for revision. Copy that offers
+   * a button that does not exist would be worse than this 400.
+   */
+  private describeUnquotable(prNumber: string, lines: UnquotableLine[]): string {
+    const held = lines.filter(l => l.reason === 'held');
+    const rejected = lines.filter(l => l.reason === 'rejected');
+    const dry = lines.filter(l => l.reason === 'no_pending_quantity');
+    const nums = (ls: UnquotableLine[]) => ls.map(l => l.line_no).join(', ');
+    const verb = (n: number) => (n === 1 ? 'is' : 'are');
+    const parts: string[] = [];
+    if (held.length) {
+      const detail = held.find(l => l.detail)?.detail;
+      parts.push(
+        `line${held.length === 1 ? '' : 's'} ${nums(held)} ${verb(held.length)} held by HOD review` +
+        (detail ? ` — "${detail}"` : ''),
+      );
+    }
+    if (rejected.length) {
+      const detail = rejected.find(l => l.detail)?.detail;
+      parts.push(
+        `line${rejected.length === 1 ? '' : 's'} ${nums(rejected)} ${verb(rejected.length)} rejected by HOD review` +
+        (detail ? ` — "${detail}"` : ''),
+      );
+    }
+    if (dry.length) {
+      parts.push(
+        `line${dry.length === 1 ? '' : 's'} ${nums(dry)} ${dry.length === 1 ? 'has' : 'have'} no quantity left to buy`,
+      );
+    }
+    return (
+      `${prNumber} has no line that can be put on an RFQ: ${parts.join('; ')}. ` +
+      'A held or rejected line is never carried onto an RFQ, so there is nothing for a vendor to quote. ' +
+      'Revert the PR to HOD review with your reasons, and the HOD will cancel it or raise a new one ' +
+      'for the lines that should still be sourced.'
+    );
+  }
+
   private async categoryPool(
     run: <U = any>(sql: string, params?: any[]) => Promise<{ rows: U[]; rowCount: number }>,
     prId: string,
@@ -1279,6 +2132,7 @@ export class RfqService {
          FROM proc.pr_lines pl
          JOIN core.categories c ON c.code = pl.category
         WHERE pl.pr_id = $1::uuid AND pl.rejected = false
+          AND ${RFQ_ELIGIBLE_LINE_PREDICATE}
         GROUP BY pl.category, c.name
         ORDER BY pl.category`,
       [prId],
@@ -1286,7 +2140,7 @@ export class RfqService {
     const categories = catRows.rows.map((r: any) => ({
       code: r.code,
       name: r.name,
-      lineNos: pgArray(r.line_nos).map(Number),
+      lineNos: pgIntArray(r.line_nos),
     }));
     if (categories.length === 0) return { categories: [], vendors: [], withheld: [] };
     const codes = categories.map(c => c.code);
@@ -1373,12 +2227,30 @@ export class RfqService {
   }
 
   /**
-   * GET /pr/:id/rfq/candidates - what Issue RFQ would send to, before it sends.
+   * GET /pr/:id/rfq/candidates — what the shared Issue/Re-issue dialog WOULD
+   * send, before it sends.
    *
-   * Read-only, and gated exactly the way `issue()` is: procurement only, and the
-   * PR must already be in a sourcing stage. It calls `categoryPool()` rather than
-   * re-deriving the rules, because a preview that disagrees with the send is
-   * worse than no preview at all.
+   * Read-only, and never a gate the client could route around: it calls
+   * `categoryPool()` rather than re-deriving the rules, because a preview that
+   * disagrees with the send is worse than no preview at all.
+   *
+   * THE STAGE GATE MIRRORS THE ACTION BEING PREVIEWED, which is why the RFQ
+   * lookup has to happen FIRST:
+   *
+   *   no live RFQ -> this is a FIRST ISSUE, so the prototype's
+   *                  `RFQ_ISSUE_STAGES` gate applies verbatim.
+   *   live RFQ     -> this is a RE-ISSUE, so `RFQ_REISSUE_STAGES` applies:
+   *                  `IN_PROCUREMENT_REVIEW` only.
+   *
+   * The preview must be gated exactly as strictly as the write it previews. If
+   * this endpoint stayed open on a forwarded PR, the Re-issue dialog would open,
+   * let the buyer compose a roster, and only then refuse — which reads as the
+   * system being broken rather than the control being enforced. The gate belongs
+   * here, where the dialog is opened.
+   *
+   * The refusal text is the prototype's own string, unchanged: the prototype
+   * serves both actions from one function, so "issue" is also the honest word
+   * for a re-issue.
    */
   async rfqCandidates(prId: string, role: string) {
     // rfqIssue(): "Only Procurement can issue an RFQ."
@@ -1391,42 +2263,145 @@ export class RfqService {
     );
     if (pr.rows.length === 0) throw new NotFoundException('PR not found');
     const p = pr.rows[0];
-    if (!RFQ_ISSUE_STAGES.includes(p.status)) {
-      throw new BadRequestException(`PR not ready for RFQ (stage: ${p.status})`);
-    }
-
-    const empty = {
-      categories: [] as Array<{ code: string; name: string; lineNos: number[] }>,
-      vendors: [] as PoolVendor[],
-      withheld: [] as PoolVendor[],
-    };
 
     const existing = await this.db.query<any>(
-      `SELECT id, rfq_number FROM proc.rfq
+      `SELECT id, rfq_number, state, reissue_count, last_reissued_at,
+              to_char(deadline_at, 'YYYY-MM-DD') AS deadline_day
+         FROM proc.rfq
         WHERE pr_id = $1::uuid AND state <> 'Cancelled'
         ORDER BY created_at DESC LIMIT 1`,
       [prId],
     );
+    const rfqState = existing.rows[0]?.state as string | undefined;
+
+    // The gate depends on WHICH action this dialog would perform, so it can only be
+    // decided once the RFQ lookup below has run. A first issue keeps the
+    // prototype's `RFQ_ISSUE_STAGES`; a re-issue is held to
+    // `RFQ_REISSUE_STAGES` — IN_PROCUREMENT_REVIEW only. See the method
+    // comment: a forwarded PR's competition is not editable in place.
+    if (existing.rows.length === 0 && !RFQ_ISSUE_STAGES.includes(p.status)) {
+      throw new BadRequestException(`PR not ready for RFQ (stage: ${p.status})`);
+    }
+    if (existing.rows.length > 0 && !RFQ_REISSUE_STAGES.includes(p.status)) {
+      throw new BadRequestException(
+        `RFQ ${existing.rows[0].rfq_number} cannot be re-issued once the PR has left ` +
+        `${RFQ_REISSUE_STAGES[0]} (stage: ${p.status}). Reject the PR with remarks to ` +
+        'return it to procurement.',
+      );
+    }
+
     if (existing.rows.length > 0) {
-      // Not an error: the prototype's "Re-issue RFQ" reuses the same dialog, so
-      // the modal opens and points at the supported top-up path instead.
+      // NOT an empty list and NOT an error. The prototype's "Re-issue RFQ"
+      // opens the SAME dialog as the first issue, seeded with the vendors
+      // already on the RFQ (lightProcIssueRFQ's `previouslySelected`). Returning
+      // an empty roster here — which is what this branch used to do — is what
+      // made the port replace the button with an inert "Open RFQ" link: the
+      // shared dialog had nothing to show, so the action disappeared entirely.
+      //
+      // So the re-issue shape is assembled properly: the LIVE roster, the
+      // eligible pool MINUS that roster (the pickable new names), the
+      // re-issue stamp, and the same category chips the first issue shows.
+      const cur = await this.db.query<any>(
+        `SELECT v.id, v.vendor_code, v.legal_name, v.state, i.invited_at,
+                i.submitted, i.declined
+           FROM proc.rfq_invitations i
+           JOIN core.vendors v ON v.id = i.vendor_id
+          WHERE i.rfq_id = $1::uuid
+          ORDER BY v.vendor_code`,
+        [existing.rows[0].id],
+      );
+      const onRoster = new Set(cur.rows.map((r: any) => r.id));
+
+      const { categories, vendors, withheld } = await this.categoryPool(
+        (sql, params) => this.db.query(sql, params),
+        prId,
+      );
+      const unsourceable = await this.unsourceableCategories(
+        (sql, params) => this.db.query(sql, params),
+        prId,
+      );
+
+      // A vendor already invited is removed from the PICKABLE list and shown as
+      // a locked "already invited" row instead. Without the subtraction it
+      // would appear twice, and ticking the duplicate would invite nothing.
+      const addable = vendors.filter((v: any) => !onRoster.has(v.id));
+
+      // THE DEAD-END NOTICE IS REPORTED BUT NOT ENFORCED HERE.
+      // On a first issue the gate blocks, because sending is what would carry
+      // an unquotable line onto a new RFQ. On a re-issue the RFQ is already out
+      // and already carries that line — adding vendors cannot remove it, and
+      // refusing the top-up would leave the buyer with no action at all for a
+      // problem they cannot fix by clicking this button either. `blocking` is
+      // sent so the UI never has to re-derive the rule.
+      const warnings: string[] = [];
+      if (unsourceable.length > 0) {
+        warnings.push(
+          this.describeUnsourceable(unsourceable) +
+          ' Adding vendors will not fix this — the line is already on the RFQ.',
+        );
+      }
+      if (rfqState !== 'Open') {
+        warnings.push(
+          `RFQ ${existing.rows[0].rfq_number} is ${rfqState} — no further invitations can be issued.`,
+        );
+      }
+      if (addable.length === 0 && withheld.length === 0) {
+        warnings.push(
+          'Every eligible vendor is already on this RFQ. Map another vendor to a line category ' +
+          'in Vendor Master, or invite one by hand from the RFQ screen.',
+        );
+      }
+
       return {
         pr_id: prId,
         pr_number: p.pr_number,
         already_issued: true,
         rfq_id: existing.rows[0].id,
         rfq_number: existing.rows[0].rfq_number,
-        ...empty,
+        reissue_count: existing.rows[0].reissue_count,
+        last_reissued_at: existing.rows[0].last_reissued_at,
+        // The prototype's `previouslySelected`, as real rows. Each carries the
+        // badge it already has so the dialog can show what came back.
+        current_vendors: cur.rows.map((r: any) => ({
+          id: r.id,
+          vendor_code: r.vendor_code,
+          legal_name: r.legal_name,
+          state: r.state,
+          invited_at: r.invited_at,
+          submitted: r.submitted === true || r.submitted === 'true',
+          declined: r.declined === true || r.declined === 'true',
+          // Marks the row as locked in the shared dialog. A separate flag
+          // rather than an inference from `state`: a re-invited vendor can be
+          // Active, and "Active" must not read as "still pickable".
+          already_invited: true,
+        })),
+        categories,
+        vendors: addable,
+        withheld,
+        unmapped_categories: unsourceable,
+        // Reported, never blocking: the RFQ already exists, so a line held since
+        // it was issued cannot be un-sent by refusing this dialog. Sending the
+        // empty array on this path keeps the modal's type from having to ask
+        // which branch it is looking at.
+        unquotable_lines: [],
         shortfall: 0,
-        suggested_deadline: isoPlusDays(PROTOTYPE_DEADLINE_DAYS),
-        warnings: [
-          `This PR already has an open RFQ (${existing.rows[0].rfq_number}). ` +
-          'Add vendors from the RFQ screen rather than issuing a second one.',
-        ],
+        // A carried-over deadline, not the +5 default: re-submitting the form
+        // without touching the date must not silently move the deadline.
+        // Rendered by the database at day granularity for the same reason the
+        // re-issue comparison is — see `reissue()`.
+        suggested_deadline: existing.rows[0].deadline_day
+          ?? isoPlusDays(PROTOTYPE_DEADLINE_DAYS),
+        // See above — the dead end is stated, not enforced, on this path.
+        blocking: false,
+        warnings,
       };
     }
 
     const { categories, vendors, withheld } = await this.categoryPool(
+      (sql, params) => this.db.query(sql, params),
+      prId,
+    );
+    const unsourceable = await this.unsourceableCategories(
       (sql, params) => this.db.query(sql, params),
       prId,
     );
@@ -1448,32 +2423,77 @@ export class RfqService {
         '. They are listed below the roster with the reason.'
       : '';
 
+    // The dead-end notice leads the list. It is not one warning among several — it
+    // is the one that makes the others moot, and burying it under a shortfall
+    // count is how a healthy-looking roster talks a buyer into sending an RFQ
+    // with an unquotable line on it.
+    const warnings: string[] = [];
+    if (unsourceable.length > 0) {
+      warnings.push(this.describeUnsourceable(unsourceable));
+    }
+    // The nothing-to-quote case, stated BEFORE the buyer presses Send rather than
+    // as a 400 afterwards. `categories` is empty in this state — every line was
+    // filtered out by RFQ_ELIGIBLE_LINE_PREDICATE — so the category chips above
+    // read empty and the roster reads "no vendor mapped", which sends the buyer
+    // to Vendor Master to repair a mapping that was never the problem.
+    const unquotable = await this.unquotableLines(
+      (sql, params) => this.db.query(sql, params),
+      prId,
+    );
+    // Only when NOTHING is quotable. A PR with 2 held and 3 quotable lines can
+    // still be sourced on the other three, and saying otherwise would block a
+    // perfectly good RFQ over two lines the HOD parked on purpose.
+    const nothingQuotable = unquotable.length > 0 && categories.length === 0;
+    if (nothingQuotable) {
+      warnings.unshift(this.describeUnquotable(p.pr_number, unquotable));
+    }
+    if (shortfall > 0 && !nothingQuotable) {
+      warnings.push(
+        `${vendors.length + withheld.length} vendor(s) are mapped to this PR's categories` +
+        (withheld.length ? `, ${vendors.length} of them eligible` : '') +
+        ` - ${shortfall} short of the ${DEFAULT_VENDOR_COUNT} the prototype issues to. ` +
+        'You can still send, and top the roster up afterwards.' +
+        withheldNote,
+      );
+    } else if (withheld.length) {
+      // No shortfall, so nothing to top up — but a withheld vendor is still
+      // something the buyer should be able to see and act on.
+      warnings.push(withheldNote.trim());
+    }
+
     return {
       pr_id: prId,
       pr_number: p.pr_number,
       already_issued: false,
       rfq_id: null,
       rfq_number: null,
+      reissue_count: 0,
+      last_reissued_at: null,
+      // Never an RFQ exists, so there is nothing locked in the dialog. Named
+      // explicitly (rather than inferred from array length) so the shared
+      // dialog renders one way on both branches.
+      current_vendors: [],
       categories,
       vendors,
       withheld,
+      // Lines that no vendor can be reached for. The modal blocks Send on these;
+      // `issue()` refuses them independently, so this is the visible copy of a
+      // gate that does not depend on the client honouring it.
+      unmapped_categories: unsourceable,
+      // Lines this PR cannot put on an RFQ at all, and why. Sent even when they
+      // do not block (a partly-held PR still sources its other lines), so the
+      // modal can show the buyer which lines are parked instead of quietly
+      // omitting them from the category chips.
+      unquotable_lines: unquotable,
       shortfall,
       // The prototype's default is today + 5 (lightProcIssueRFQ's plusDays(5)),
       // not this module's DEFAULT_DEADLINE_DAYS of 7.
       suggested_deadline: isoPlusDays(PROTOTYPE_DEADLINE_DAYS),
-      warnings: shortfall > 0
-        ? [
-          `${vendors.length + withheld.length} vendor(s) are mapped to this PR's categories` +
-          (withheld.length ? `, ${vendors.length} of them eligible` : '') +
-          ` - ${shortfall} short of the ${DEFAULT_VENDOR_COUNT} the prototype issues to. ` +
-          'You can still send, and top the roster up afterwards.' +
-          withheldNote,
-        ]
-        : withheld.length
-          // No shortfall, so nothing to top up — but a withheld vendor is still
-          // something the buyer should be able to see and act on.
-          ? [withheldNote.trim()]
-          : [],
+      // A first issue IS blocked by a dead-end line — sending is what would put
+      // it on a new RFQ — and equally by having nothing quotable to send.
+      // Stated, not re-derived by the client.
+      blocking: unsourceable.length > 0 || nothingQuotable,
+      warnings,
     };
   }
 
@@ -1552,6 +2572,19 @@ export class RfqService {
       validity_days: q.validity_days === null ? null : Number(q.validity_days),
       submitted_at: q.submitted_at,
       supersedes_quotation_id: q.supersedes_quotation_id,
+      // Always an array, never null: "no document on this version" and "the
+      // payload did not carry attachments" must not render the same.
+      //
+      // parseJsonb, NOT Array.isArray. DbService runs psql as a subprocess, so a
+      // jsonb column arrives as a JSON STRING — Array.isArray is false on it and
+      // the button silently disables itself on every row that HAS a document.
+      // This is the same trap vendors.service.ts:52 documents for `scorecard`.
+      attachments: (() => {
+        const parsed = parseJsonb(q.attachments);
+        return Array.isArray(parsed)
+          ? parsed.map((a: any) => ({ id: a.id, name: a.name, kind: a.kind }))
+          : [];
+      })(),
     };
   }
 }

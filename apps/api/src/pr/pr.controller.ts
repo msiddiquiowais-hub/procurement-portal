@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { IsArray, IsBoolean, IsIn, IsNumber, IsObject, IsOptional, IsString, Matches, Max, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { CLASSIFICATIONS } from '@procurement/d365-client';
@@ -16,6 +16,34 @@ class TagApproverDto {
   @IsString() name!: string;
   @IsString() email!: string;
   @IsOptional() @IsString() deptCode?: string;
+}
+
+class RevertToHodDto {
+  @IsString() @Matches(/\S/, { message: 'remarks must not be blank' }) remarks!: string;
+}
+
+/**
+ * ONE LINE'S CAPEX/OPEX CLASS.
+ *
+ * The classification values are the D365 contract's own five, taken from the
+ * same imported list the service and the payload builder use. A class the ERP
+ * does not know is refused at the edge rather than stored and discovered at
+ * push time.
+ *
+ * `usefulLifeYears` is required by the service for a capital line — the pipe
+ * cannot express "required only when the class is CAPEX_*", so the service
+ * checks it and says which line is wrong.
+ */
+class SetLineClassDto {
+  @IsNumber() @Min(1) lineNo!: number;
+  @IsIn(CLASSIFICATIONS.map((c) => c.value)) classification!: string;
+  @IsOptional() @IsNumber() @Min(1) @Max(60) usefulLifeYears?: number;
+}
+
+class SetLineClassificationDto {
+  @IsArray() @ValidateNested({ each: true }) @Type(() => SetLineClassDto)
+  lines!: SetLineClassDto[];
+  @IsOptional() @IsString() reason?: string;
 }
 
 class CreatePrLineDto {
@@ -141,6 +169,30 @@ class AdvancePrDto {
   // the `lineDecisions` the line-routing evaluator filters on, and are
   // persisted to proc.pr_lines.approved / .rejected / .held.
   @IsOptional() @IsObject() lineDecisions?: Record<number, 'approved' | 'rejected' | 'held'>;
+
+  /**
+   * THE CS HAND-OFF FLAGS. Declared here so `whitelist: true` stops deleting
+   * them.
+   *
+   * Nest's ValidationPipe runs with `whitelist: true`, which REMOVES every body
+   * property this class does not declare — before the value reaches
+   * PrService.advance(), and therefore before the engine ever sees a decision.
+   * With these two fields absent, `ready_for_cs` (order 5) and `cs_review`
+   * (order 6) could never match through this route: the response came back
+   * `matchedStep: 'procurement'` while `evaluatedSteps` listed BOTH, i.e. the
+   * steps were evaluated and then rejected on conditions whose flags had already
+   * been stripped. A gate written on a step nobody can fire is defence in depth
+   * pretending to be a control.
+   *
+   * Declaring a property is what makes it ARRIVE — that is all this does. The
+   * flags are claims the service VERIFIES: `csReviewConfirmed` is honoured only
+   * when a review row for the statement's live round genuinely says CONFIRMED
+   * (see PrService.advance), and `readyForCs` is honoured only when there is a
+   * generated statement to hand over. Trusting either one would turn this route
+   * into a way around the blind review.
+   */
+  @IsOptional() @IsBoolean() csReviewConfirmed?: boolean;
+  @IsOptional() @IsBoolean() readyForCs?: boolean;
 }
 
 @UseGuards(JwtAuthGuard)
@@ -234,5 +286,84 @@ export class PrController {
   ) {
     const u = req.user;
     return this.svc.hold(id, u.id, u.role, u.costCenterIds, body?.reason, body?.resume === true);
+  }
+
+  /**
+   * Procurement returns a PR to the HOD.
+   *
+   * Procurement has NO reject — it is a sourcing function, not the demand owner.
+   * Sending the PR back to the HOD, with mandatory remarks, is the whole of its
+   * authority at this stage. See PrService.revertToHod() for the chain-of-custody
+   * argument and the empty-RFQ cascade.
+   *
+   * `remarks` is declared non-optional with a non-blank pattern so a whitespace
+   * body is refused by the pipe; the service re-checks, because the pipe is not
+   * a control and every other caller of this service is not an HTTP request.
+   */
+  @Post(':id/revert-to-hod')
+  async revertToHod(
+    @Param('id') id: string,
+    @Body() body: RevertToHodDto,
+    @Req() req: any,
+  ) {
+    const u = req.user;
+    return this.svc.revertToHod(id, u.id, u.role, body?.remarks);
+  }
+
+  /**
+   * CLASSIFY THE LINES — the per-line Capex/Opex class.
+   *
+   * Step 5 of the workflow. The `cs_review` step declares `requiresCapexOpex`
+   * and the request may not leave that step until every approved line carries
+   * a class, so this is where the class is set: by the desk that ran the
+   * competition and knows what was quoted.
+   *
+   * The classification values are the D365 contract's own five, and the DTO
+   * validates against the same imported list the service uses, so a class the
+   * ERP does not know cannot reach the database.
+   */
+  @Patch(':id/lines/classification')
+  async setLineClassifications(
+    @Param('id') id: string,
+    @Body() body: SetLineClassificationDto,
+    @Req() req: any,
+  ) {
+    const u = req.user;
+    return this.svc.setLineClassifications(id, u.id, u.role, u.costCenterIds, body);
+  }
+
+  /**
+   * RE-APPLY THE AWARD AND SYNC THE RATES.
+   *
+   * The recovery action for a request whose statement was confirmed without
+   * its winning rates ever reaching the lines. It repairs the money and
+   * nothing else: it does not move the request, does not change the
+   * statement's state, and does not classify anything.
+   */
+  @Post(':id/reapply-award')
+  async reapplyAward(@Param('id') id: string, @Req() req: any) {
+    const u = req.user;
+    return this.svc.reapplyAward(id, u.id, u.role, u.costCenterIds);
+  }
+
+  /**
+   * READY FOR CS — procurement forwards the finished competition to the committee.
+   *
+   * Deliberately NOT an `advance()`: `planAdvance()` walks the light flow
+   * (IN_PROCUREMENT_REVIEW -> IN_COST_CENTER_APPROVAL) and has no step into
+   * QUOTES_RECEIVED, so there was no route to the CS stage at all. This is its
+   * own act with its own gates — see PrService.readyForCs().
+   *
+   * `remarks` is optional here (unlike revert-to-hod, which must justify itself):
+   * forwarding is the expected end of sourcing, not an exception to it.
+   */
+  @Post(':id/ready-for-cs')
+  async readyForCs(
+    @Param('id') id: string,
+    @Body() body: { remarks?: string },
+    @Req() req: any,
+  ) {
+    const u = req.user;
+    return this.svc.readyForCs(id, u.id, u.role, body?.remarks);
   }
 }

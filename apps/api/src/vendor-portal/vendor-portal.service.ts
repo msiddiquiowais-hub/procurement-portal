@@ -7,6 +7,50 @@ import { QuotationService } from '../sourcing/quotation.service';
 import { buildXlsx, readXlsx, type CellValue } from './xlsx';
 
 /**
+ * The stage a PR sits in while procurement is still running the competition.
+ * Named here rather than imported so this service keeps no dependency on the
+ * sourcing module — the vendor portal must not be able to reach procurement's
+ * gates by accident, and the value it reads is the PR's own status.
+ */
+const PROCUREMENT_STAGE = 'IN_PROCUREMENT_REVIEW';
+
+/**
+ * Are quotes still accepted for this RFQ?
+ *
+ * Two independent closes, and BOTH are required:
+ *
+ *   1. the RFQ is no longer `Open` (awarded, cancelled, or closed at hand-off)
+ *   2. the PR has left procurement review
+ *
+ * The second is the one this endpoint was missing, and the gap was real rather
+ * than theoretical: the RFQ stays `Open` from issue all the way to the CS lock,
+ * so a check on the RFQ alone protected the CS_LOCKED and PACK_LOCKED stages and
+ * left the whole QUOTES_RECEIVED population writable. On this estate that was
+ * 137 live invitations, 103 of them already submitted — a vendor holding a link
+ * could still move a price after the buyer had forwarded the request to CS.
+ *
+ * The database now refuses the write itself (migration 064). This check is not
+ * redundant with it: it is what turns a refusal into a sentence a vendor can act
+ * on, and it fires before the form is even rendered.
+ *
+ * An MC rejection deliberately returns a PR to QUOTES_RECEIVED and reopens the
+ * RFQ so a second round can be scored, so this is a stage rule and not a latch —
+ * a returned request legitimately accepts quotes again.
+ */
+function quotesClosed(rfqState: string, prStatus: string): boolean {
+  return rfqState !== 'Open' || prStatus !== PROCUREMENT_STAGE;
+}
+
+/** The sentence a vendor is shown when their quote can no longer be accepted. */
+function closedMessage(rfqState: string, prStatus: string): string {
+  if (prStatus !== PROCUREMENT_STAGE && rfqState === 'Open') {
+    return 'This request has moved on to the next stage, so quotations are closed. ' +
+      'Thank you — the quote you sent is the one being reviewed.';
+  }
+  return `This RFQ is ${rfqState} — quotations are closed.`;
+}
+
+/**
  * WAVE 5 TRACK F — the sandboxed vendor portal.
  *
  * ACCESSIBLE BY TOKEN ALONE. No password, no NTN, no portal account, no login.
@@ -62,7 +106,7 @@ export class VendorPortalService {
               i.declined_reason, i.expires_at, i.dispatched_at,
               v.legal_name, v.vendor_code,
               rf.rfq_number, rf.title, rf.currency, rf.state AS rfq_state, rf.deadline_at,
-              p.pr_number
+              p.pr_number, p.status AS pr_status
          FROM proc.rfq_invitations i
          JOIN core.vendors v ON v.id = i.vendor_id
          JOIN proc.rfq rf ON rf.id = i.rfq_id
@@ -135,7 +179,12 @@ export class VendorPortalService {
         currency: inv.currency,
         deadline: inv.deadline_at,
         state: inv.rfq_state,
+        pr_stage: inv.pr_status,
       },
+      // Told to the page so it stops rendering a live quote form on a request
+      // that has already been forwarded to CS. Without this the vendor fills in
+      // a whole quote and is refused only on submit.
+      quotes_closed: quotesClosed(inv.rfq_state, inv.pr_status),
       link_expires_at: inv.expires_at,
       submitted: inv.submitted === true || inv.submitted === 'true',
       declined: inv.declined === true || inv.declined === 'true',
@@ -205,6 +254,12 @@ export class VendorPortalService {
     }
     if (inv.rfq_state !== 'Open') {
       throw new BadRequestException(`This RFQ is ${inv.rfq_state} — quotes are closed.`);
+    }
+    // The PR's own stage, which the check above cannot see: the RFQ is still
+    // `Open` at this point by design, because it is only marked `Awarded` when
+    // the committee locks. See `quotesClosed`.
+    if (inv.pr_status !== PROCUREMENT_STAGE) {
+      throw new BadRequestException(closedMessage(inv.rfq_state, inv.pr_status));
     }
     if (inv.deadline_at && new Date(inv.deadline_at).getTime() < Date.now()) {
       throw new BadRequestException('The quotation deadline has passed. Contact the buyer if you need more time.');

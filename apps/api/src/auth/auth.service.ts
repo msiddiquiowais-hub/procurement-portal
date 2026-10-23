@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { DbService } from '../db/db.service';
+import { pgArray } from '../db/pg-array';
 
 export type LoginInput = { email: string; password?: string };
 export type AuthenticatedUser = {
@@ -27,18 +28,10 @@ const SESSION_COLUMNS = 'id, email, display_name, role, cost_center_ids, vendor_
 /**
  * Postgres array literals look like `{val1,val2}` (no quotes for non-string
  * types, double-quoted for text). The DbService returns them as raw strings
- * via CSV mode, so parse them here before they reach controller code.
+ * via CSV mode, so they are parsed before they reach controller code — by
+ * `pgArray`, which now has ONE owner in `db/pg-array.ts` rather than a copy per
+ * call site.
  */
-function parsePostgresArrayLiteral(s: string | null | undefined): string[] {
-  if (!s) return [];
-  const t = s.trim();
-  if (t.startsWith('{') && t.endsWith('}')) {
-    const inner = t.slice(1, -1);
-    if (!inner) return [];
-    return inner.split(',').map(x => x.replace(/^"(.*)"$/, '$1'));
-  }
-  return [];
-}
 
 @Injectable()
 export class AuthService {
@@ -76,7 +69,7 @@ export class AuthService {
       email: u.email,
       displayName: u.display_name,
       role: u.role,
-      costCenterIds: parsePostgresArrayLiteral(u.cost_center_ids),
+      costCenterIds: pgArray(u.cost_center_ids),
       vendorId: u.vendor_id ?? null,
     };
     const token = await this.jwt.signAsync({
@@ -110,7 +103,7 @@ export class AuthService {
         email: u.email,
         displayName: u.display_name,
         role: u.role,
-        costCenterIds: parsePostgresArrayLiteral(u.cost_center_ids),
+        costCenterIds: pgArray(u.cost_center_ids),
         vendorId: u.vendor_id ?? null,
       };
     } catch {

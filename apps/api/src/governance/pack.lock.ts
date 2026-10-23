@@ -119,8 +119,9 @@ async function buildDocumentDigests(run: Run, a: LockPackArgs): Promise<PackDige
                   SELECT jsonb_agg(jsonb_build_object(
                             'rfq_line_no', ql.rfq_line_no,
                             'unit_price', ql.unit_price,
-                            'total_price', ql.total_price,
+                            'total_price', COALESCE(ql.line_total, ql.total_price),
                             'declined', ql.declined,
+                            'warranty_months', ql.warranty_months,
                             'remarks', ql.remarks
                           ) ORDER BY ql.rfq_line_no)
                     FROM proc.quotation_lines ql WHERE ql.quotation_id = q.id), '[]'::jsonb)
@@ -243,6 +244,123 @@ async function buildDocumentDigests(run: Run, a: LockPackArgs): Promise<PackDige
   return out;
 }
 
+type RevokedVendor = {
+  vendor_id: string;
+  vendor_name: string;
+  /** PR line numbers this vendor can no longer supply. */
+  lineNos: number[];
+  /** The categories whose removal caused it. */
+  categories: string[];
+};
+
+/**
+ * Award lines this PR's winning vendor(s) can no longer legally supply.
+ *
+ * A vendor is "revoked" for a line when they have been REMOVED from that line's
+ * category in Vendor Master. That is a forward-looking control: it stops them
+ * being awarded work they may not now perform. It is deliberately NOT a
+ * judgement on the quotation — nothing here re-reads, re-scores or invalidates
+ * a recorded quote, and a pack already frozen above is never re-examined.
+ *
+ * Only the CATEGORY MAPPING is tested. Whether the vendor is on hold, blacklisted
+ * or High-risk is enforced earlier and elsewhere, at invitation and at award
+ * selection; re-deciding those facts here would create a second, drifting copy
+ * of rules this module has no business owning.
+ *
+ * Returns one entry per affected vendor: the PR lines they hold no mapping for,
+ * and the categories behind them.
+ */
+async function revokedAwardLines(
+  run: Run,
+  prId: string,
+  vendorIds: string[],
+): Promise<RevokedVendor[]> {
+  if (vendorIds.length === 0) return [];
+  const r = await run<any>(
+    `SELECT v.id AS vendor_id, v.legal_name, pl.line_no, pl.category
+       FROM proc.pr_lines pl
+       CROSS JOIN core.vendors v
+      WHERE pl.pr_id = $1::uuid
+        AND pl.rejected = false
+        AND v.id = ANY($2::uuid[])
+        AND NOT EXISTS (
+          SELECT 1 FROM core.vendor_categories vc
+            JOIN core.categories c ON c.id = vc.category_id
+           WHERE vc.vendor_id = v.id AND vc.is_active AND c.code = pl.category)
+      ORDER BY v.id, pl.line_no`,
+    [prId, vendorIds],
+  );
+  const by = new Map<string, { vendor_id: string; vendor_name: string; lineNos: number[]; categories: string[] }>();
+  for (const row of r.rows) {
+    const e = by.get(row.vendor_id) ?? {
+      vendor_id: row.vendor_id,
+      vendor_name: row.legal_name,
+      lineNos: [] as number[],
+      categories: [] as string[],
+    };
+    e.lineNos.push(Number(row.line_no));
+    if (!e.categories.includes(row.category)) e.categories.push(row.category);
+    by.set(row.vendor_id, e);
+  }
+  return [...by.values()];
+}
+
+/**
+ * Apply the revocation rule to the award BEFORE anything is hashed or written.
+ *
+ * SPLIT — vendor-level exclusion. Each split line is an explicit per-line
+ * decision, so a revoked vendor's lines are dropped and the remaining vendors
+ * proceed. If nothing survives, the award is empty and there is nothing legal to
+ * attest to, so it is refused.
+ *
+ * SINGLE — refused rather than silently converted. A single winner holds the
+ * whole PR; excluding them empties the award. Turning that into a split would
+ * change `award_mode`, change who the compliance checklist attests to, and put a
+ * decision nobody made inside a frozen hashed document. That belongs to a human
+ * re-awarding the lines, not to this function inferring it.
+ */
+async function applyRevocationRule(
+  run: Run,
+  a: LockPackArgs,
+): Promise<{ args: LockPackArgs; excluded: RevokedVendor[] }> {
+  const vendors = a.winner
+    ? [a.winner.vendor_id]
+    : [...new Set((a.split ?? []).map((s) => s.vendor_id))];
+
+  const revoked = await revokedAwardLines(run, a.prId, vendors);
+  if (revoked.length === 0) return { args: a, excluded: [] };
+
+  const revokedById = new Map(revoked.map((r) => [r.vendor_id, r]));
+
+  if (a.winner) {
+    const r = revokedById.get(a.winner.vendor_id);
+    if (r) {
+      throw new BadRequestException(
+        `The awarded vendor ${a.winner.vendor_name} has been removed from `
+        + `${r.categories.join(' and ')}, which covers line ${r.lineNos.join(', ')} of this PR. `
+        + 'A single-winner pack cannot drop a vendor without leaving the award empty, '
+        + 'so the pack is not locked. Re-award those lines to an eligible vendor, '
+        + 'or ask Vendor Master to reactivate the mapping.',
+      );
+    }
+    return { args: a, excluded: [] };
+  }
+
+  // SPLIT: drop only the lines whose vendor can no longer supply them. A vendor
+  // keeps the lines they are STILL mapped for — being revoked from one category
+  // does not revoke the whole supplier relationship.
+  const kept = (a.split ?? []).filter((s) => !revokedById.has(s.vendor_id));
+  if (kept.length === 0) {
+    const names = revoked.map((r) => `${r.vendor_name} (${r.categories.join(', ')})`).join('; ');
+    throw new BadRequestException(
+      `Every vendor in this split award has been revoked: ${names}. `
+      + 'No eligible vendor remains to attest to, so the pack is not locked. '
+      + 'Re-award the lines to an eligible vendor, or ask Vendor Master to reactivate the mapping.',
+    );
+  }
+  return { args: { ...a, split: kept }, excluded: revoked };
+}
+
 /**
  * Freeze the approved pack.
  *
@@ -253,7 +371,9 @@ async function buildDocumentDigests(run: Run, a: LockPackArgs): Promise<PackDige
  *
  * Already-frozen is NOT an error: a second lock returns the existing pack. The
  * prototype's pack screen shows the locked state rather than a button, and a
- * retry after a dropped connection should not 400.
+ * retry after a dropped connection should not 400. That early return also means
+ * a pack is never re-examined by the revocation rule below — freezing is final
+ * in both directions.
  */
 export async function lockPack(run: Run, a: LockPackArgs) {
   const existing = await run<any>(
@@ -276,7 +396,14 @@ export async function lockPack(run: Run, a: LockPackArgs) {
     };
   }
 
-  const digests = await buildDocumentDigests(run, a);
+  // The revocation gate. Runs BEFORE buildDocumentDigests() on purpose: the
+  // compliance checklist hashes the due-diligence state of every vendor in the
+  // award, so an excluded vendor must be gone from `split` before that hash is
+  // taken — otherwise the frozen document would attest to due diligence for a
+  // supplier the pack does not contain.
+  const { args: eligible, excluded } = await applyRevocationRule(run, a);
+
+  const digests = await buildDocumentDigests(run, eligible);
 
   const payload = {
     kind: 'approved_pack',
@@ -289,9 +416,19 @@ export async function lockPack(run: Run, a: LockPackArgs) {
     // `winner` is null for a split and the per-line decision lives in `split`.
     // Both are present in the payload so the frozen document is unambiguous
     // about which kind of decision it froze.
-    winner: a.winner ? { vendor_id: a.winner.vendor_id, vendor_name: a.winner.vendor_name } : null,
-    award_mode: a.winner ? 'SINGLE' : 'SPLIT',
-    split: a.split ?? null,
+    winner: eligible.winner ? { vendor_id: eligible.winner.vendor_id, vendor_name: eligible.winner.vendor_name } : null,
+    award_mode: eligible.winner ? 'SINGLE' : 'SPLIT',
+    split: eligible.split ?? null,
+    // Any vendor dropped by the revocation rule is named IN the frozen document.
+    // A pack is a legal record: silently omitting an awarded supplier would make
+    // the document read as if they were never considered, which is exactly the
+    // "approximately right inside a hash" failure this module exists to prevent.
+    revoked_vendors_excluded: excluded.map((r) => ({
+      vendor_id: r.vendor_id,
+      vendor_name: r.vendor_name,
+      revoked_line_nos: r.lineNos,
+      revoked_categories: r.categories,
+    })),
     quotation: a.quote
       ? {
           id: a.quote.id,

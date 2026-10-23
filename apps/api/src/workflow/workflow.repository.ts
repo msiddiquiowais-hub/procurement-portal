@@ -135,6 +135,111 @@ export class WorkflowRepository {
   }
 
   /**
+   * Add ONE named step to a PR's frozen snapshot, if it is not already there.
+   *
+   * WHY THIS EXISTS, AND WHY IT IS NOT A LOOPHOLE IN THE SNAPSHOT
+   * -----------------------------------------------------------
+   * A snapshot exists so an ADMIN EDIT cannot retroactively re-route a request
+   * already in flight — moving the finance threshold after someone approved
+   * against the old rule, deleting a stage, rewiring a transition. Every one of
+   * those is a decision somebody took and may have relied on.
+   *
+   * A NEWLY SHIPPED CAPABILITY is not that. Nobody relied on `revert_to_hod`
+   * being absent from a PR created last month; the step did not exist in order to
+   * be absent. Freezing it out would make a recovery action unreachable on
+   * precisely the pre-existing PRs that need recovering — 475 were sitting at
+   * IN_PROCUREMENT_REVIEW with a snapshot taken before migration 060, and
+   * PR-2026-201649 among them.
+   *
+   * So this merges exactly one named step and touches no existing entry. Admin
+   * edits to steps already in the snapshot still cannot reach the PR. The
+   * alternative — ignoring the snapshot entirely for this one action — would
+   * also let an admin's edit of `hod_review` or `procurement` leak in, which is
+   * exactly what the snapshot was built to prevent.
+   */
+  async ensureStepInSnapshot(prId: string, stepKey: string): Promise<boolean> {
+    const live = await this.db.query<{ payload: string }>(
+      `SELECT payload::text AS payload FROM workflow.steps_config WHERE id = '${this.escape(stepKey)}'`,
+      [],
+      { bypassRls: true },
+    );
+    const liveRow = live.rows[0];
+    if (!liveRow) return false;
+
+    // The key MUST be injected. `workflow.steps_config` keeps the step key in the
+    // table's `id` COLUMN, not in the payload, but `loadForPr()` derives a
+    // snapshot entry's key from the payload's `key` field — so a payload copied
+    // across verbatim comes back as `step_N` and `steps.find(s => s.key ===
+    // 'revert_to_hod')` cannot see it. Appending it without the key produced a
+    // 400 on the very PR the merge was meant to rescue, while looking like it
+    // had worked.
+    //
+    // The NOT EXISTS clause below keys on that same field, so before this fix it
+    // never matched either and EVERY call appended another copy: 352 junk
+    // entries across 26 snapshots before it was caught.
+    const payload = { ...JSON.parse(liveRow.payload), key: stepKey };
+
+    // IT IS INSERTED AT ITS DECLARED POSITION, NOT APPENDED.
+    //
+    // `stepsFromConfigRows` re-stamps every step's `order` from its ARRAY
+    // POSITION (`{ ...step, order: idx + 1 }`), so the array order IS the
+    // engine's priority list — the payload's own `order` is read only to decide
+    // where the entry belongs. Appending therefore put the merged step LAST,
+    // behind every step already in the snapshot, and a step that is last is a
+    // step that never wins: the first candidate whose condition matches wins, and
+    // an `always` step above it answers first.
+    //
+    // Measured on the reported case: cs_review_quotes (order 7) was appended to a
+    // 17-step snapshot and came back as order 18, behind mc_approval (16) — so
+    // `advance` with `csReviewConfirmed: true` matched mc_approval and returned
+    // "Only mc can action MC approval". The step was present, correct, and
+    // unreachable. Reproduced directly against the stored snapshot; the failure
+    // looked exactly like the flag not arriving, which is why this comment is
+    // longer than the fix.
+    //
+    // The boundary is the first existing step whose `order` is greater than the
+    // new one's, so relative order among existing entries is preserved exactly.
+    const current = await this.db.query<{ steps: string }>(
+      `SELECT steps::text AS steps
+         FROM workflow.pr_workflow_snapshot
+        WHERE pr_id = '${this.escapeUuid(prId)}'`,
+      [],
+      { bypassRls: true },
+    );
+    const row = current.rows[0];
+    if (!row) return false;
+
+    const parsed = this.parsePayload(row.steps, 'pr_workflow_snapshot');
+    if (!Array.isArray(parsed)) return false;
+
+    const entries = parsed as Array<Record<string, unknown>>;
+    // Belt and braces alongside the UPDATE guard: a snapshot that already holds
+    // the step must not gain a second copy.
+    if (entries.some((e) => e?.key === stepKey || e?.id === stepKey)) return false;
+
+    const newOrder = Number(payload.order);
+    const at = Number.isFinite(newOrder)
+      ? entries.findIndex((e) => Number(e?.order) > newOrder)
+      : -1;
+    const next = at === -1
+      ? [...entries, payload]
+      : [...entries.slice(0, at), payload, ...entries.slice(at)];
+
+    const upd = await this.db.query(
+      `UPDATE workflow.pr_workflow_snapshot
+          SET steps = '${this.escape(JSON.stringify(next))}'::jsonb,
+              snapshot_at = now()
+        WHERE pr_id = '${this.escapeUuid(prId)}'
+          AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(steps) e
+                           WHERE e->>'key' = '${this.escape(stepKey)}'
+                              OR e->>'id'  = '${this.escape(stepKey)}')`,
+      [],
+      { bypassRls: true },
+    );
+    return (upd.rowCount ?? 0) > 0;
+  }
+
+  /**
    * Freeze the current live config against a PR.
    *
    * This is what stops an admin edit from retroactively re-routing requests that

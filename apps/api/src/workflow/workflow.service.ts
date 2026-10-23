@@ -87,6 +87,20 @@ export class WorkflowService {
     return this.getLiveConfig();
   }
 
+  /**
+   * Make one named step available to a PR whose frozen snapshot predates it.
+   *
+   * The snapshot is not bypassed — it is amended, once, for that one step. See
+   * WorkflowRepository.ensureStepInSnapshot() for why a new capability has to
+   * reach old PRs and why this is not an opening for admin edits.
+   */
+  async ensureStepForPr(prId: string, stepKey: string): Promise<void> {
+    const added = await this.repo.ensureStepInSnapshot(prId, stepKey);
+    if (added) {
+      this.log.log(`Merged step ${stepKey} into the frozen routing config for PR ${prId}.`);
+    }
+  }
+
   /** Cached convenience for callers that have no PR to scope against. */
   async getRoutingConfig(): Promise<RoutingConfig> {
     return this.getLiveConfig();

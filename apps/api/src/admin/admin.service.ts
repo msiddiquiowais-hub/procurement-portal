@@ -114,6 +114,90 @@ export class AdminService {
     }
   }
 
+  // ─── FX rates ─────────────────────────────────────────────────────────────
+
+  /**
+   * GET /admin/fx-rates — the FULL time series, plus which row is current.
+   *
+   * The Settings screen edits this master, so it needs the history, not just the
+   * latest row: an officer must be able to see that USD has several rates on
+   * file and which one is in force. `current` is picked with the same "first row
+   * per currency" walk that GET /lookups/currencies performs in SQL, so the
+   * number shown here and the number an officer quotes against cannot disagree.
+   */
+  async getFxRates(role: string) {
+    this.assertSettingsRead(role);
+    const r = await this.db.query<any>(
+      `SELECT currency, effective_date, rate_to_pkr, source
+         FROM core.fx_rates
+        ORDER BY currency, effective_date DESC`,
+      [],
+      { role, bypassRls: true },
+    );
+    const current = new Map<string, any>();
+    for (const row of r.rows) {
+      if (!current.has(row.currency)) {
+        current.set(row.currency, { ...row, rate_to_pkr: Number(row.rate_to_pkr) });
+      }
+    }
+    return {
+      rates: r.rows.map((x: any) => ({ ...x, rate_to_pkr: Number(x.rate_to_pkr) })),
+      current: [...current.values()],
+    };
+  }
+
+  /**
+   * PUT /admin/fx-rates/:currency — record the rate that takes effect from a
+   * date.
+   *
+   * APPEND-ONLY by effective_date, matching the table's own primary key
+   * (currency, effective_date). Re-writing the SAME date is a correction of
+   * that day, not a new rate; a later date is a new row. Nothing is ever
+   * deleted, because a quotation recorded under a rate keeps the fx_rate it was
+   * written with — restating a historical rate would silently restate
+   * historical money.
+   *
+   * PKR is refused outright. The comparative statement multiplies by fx_rate
+   * and treats PKR as 1, so a PKR row set to anything else would mis-normalise
+   * every PKR quotation — and it is exactly the rate nobody should need to edit.
+   */
+  async putFxRate(
+    currency: string,
+    body: { rateToPkr?: number; effectiveDate?: string; source?: string },
+    role: string,
+  ) {
+    this.assertSettingsWrite(role);
+    const code = String(currency || '').trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(code)) {
+      throw new BadRequestException('currency must be a 3-letter ISO 4217 code, e.g. USD');
+    }
+    const rate = Number(body?.rateToPkr);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      throw new BadRequestException('rateToPkr must be a number greater than zero');
+    }
+    if (code === 'PKR') {
+      throw new BadRequestException(
+        'PKR is the normalisation baseline and is fixed at 1 — it is not an editable rate',
+      );
+    }
+    const date = String(body?.effectiveDate || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('effectiveDate must be a YYYY-MM-DD date');
+    }
+    const source = String(body?.source || 'manual').trim().slice(0, 60);
+
+    const r = await this.db.query<any>(
+      `INSERT INTO core.fx_rates (currency, effective_date, rate_to_pkr, source)
+       VALUES ($1, $2::date, $3, $4)
+       ON CONFLICT (currency, effective_date)
+         DO UPDATE SET rate_to_pkr = EXCLUDED.rate_to_pkr, source = EXCLUDED.source
+       RETURNING currency, effective_date, rate_to_pkr, source`,
+      [code, date, rate, source],
+      { role, bypassRls: true },
+    );
+    return { rate: { ...r.rows[0], rate_to_pkr: Number(r.rows[0].rate_to_pkr) } };
+  }
+
   // ─── settings ─────────────────────────────────────────────────────────────
 
   /**

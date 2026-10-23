@@ -50,7 +50,20 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'authorization'],
+    // `x-file-name` and `x-file-kind` are NOT optional extras here.
+    //
+    // Every JSON call sends only content-type + authorization, so this list used
+    // to be exactly right for them — and the attachment upload still failed on
+    // every single attempt with a bare "Failed to fetch". A header outside this
+    // list is not rejected by the server: the BROWSER blocks the request at the
+    // preflight, before it leaves, and the only symptom is `TypeError: Failed
+    // to fetch`. Nothing reaches the log, nothing reaches the API, and the
+    // officer is told a quotation upload failed with no way to find out why.
+    //
+    // Both upload paths send these — the internal Receive Quotation attachment
+    // (apps/web/lib/api.ts uploadFile) and the supplier portal's own quotation
+    // upload (vendor-portal.controller.ts reads the same two headers).
+    allowedHeaders: ['content-type', 'authorization', 'x-file-name', 'x-file-kind'],
   });
 
   // Global filter: log every thrown error to disk.

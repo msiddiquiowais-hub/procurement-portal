@@ -32,11 +32,187 @@ import { PdfBuilder } from './pdf';
  *    stored under a UUID so two compiles can never collide, and never treated as
  *    the record. The record is the table.
  */
+
+/**
+ * IS THIS BID ELIGIBLE TO BE THE L1 (LOWEST) BID?
+ *
+ * Strictly `unit_price > 0`.
+ *
+ * The rule used to be `unit_price !== null`, and 0 passed it. A zero is not a
+ * price — it is a missing one, or a free-of-charge line that means FOC in this
+ * trade — and sorting ascending put it FIRST, so the zero-price vendor became
+ * the L1 baseline for the line and was awarded the green badge. Every other
+ * vendor then measured as a premium over zero, which is what produced the
+ * "+PKR 1,800 over L1 — zero price" override warning on the award screen: the
+ * system had declared a null price to be the cheapest offer on the market.
+ *
+ * `Number()` rather than a raw comparison because the value arrives through a
+ * CSV bridge and may be a numeric string. A non-numeric rate is NaN, and
+ * `NaN > 0` is false, so junk is excluded here too rather than sorting to a
+ * position nobody chose.
+ */
+export function isL1Eligible(unitPrice: unknown): boolean {
+  if (unitPrice === null || unitPrice === undefined || unitPrice === '') return false;
+  const n = Number(unitPrice);
+  return Number.isFinite(n) && n > 0;
+}
+
+/** The cheapest ELIGIBLE bid on a line, or null when every bid is zero/absent. */
+function cheapestBid(bids: any[]): any | null {
+  return bids
+    .filter((b) => isL1Eligible(b.unit_price))
+    .sort((a, b) => Number(a.unit_price) - Number(b.unit_price))[0] ?? null;
+}
 @Injectable()
 export class AwardService {
   private readonly log = new Logger('Award');
 
   constructor(private readonly db: DbService) {}
+
+  /**
+   * Every live award's commercial breakdown, with the vendor REMOVED.
+   *
+   * cs_line_awards has no quotation_id, so the awarded quote is reached through
+   * the RFQ line plus the award's vendor, taking the newest live version. That
+   * vendor_id is used to JOIN and then deliberately NOT selected: no `v.*`
+   * column appears in the output, so no code, name or id can reach the payload.
+   *
+   * This is what the blind reviewer is actually asked to judge — the rates,
+   * taxes, discounts and delivery terms of the recommendation, with the
+   * supplier's identity withheld. A review that showed no figures would be a
+   * rubber stamp.
+   *
+   * NULLs are preserved rather than coerced: the blind screen shows the recorded
+   * figure per column and marks an absent one absent, because substituting 0 for
+   * an unknown tax would print a number nobody quoted.
+   */
+  private async blindAwardDetail(csId: string, ctx: any) {
+    const r = await this.db.query<any>(
+      `SELECT a.rfq_line_no, a.awarded_qty,
+              l.description, l.quantity, l.uom,
+              pl.category,
+              q.lead_time_days,
+              ql.unit_price, ql.gross_amount, ql.discount_percent, ql.discount_amount,
+              ql.net_amount, ql.tax_percent, ql.tax_amount, ql.line_total,
+              ql.remarks
+         FROM proc.cs_line_awards a
+         JOIN proc.comparative_statements cs ON cs.id = a.cs_id
+         JOIN proc.rfq_lines l ON l.rfq_id = cs.rfq_id AND l.line_no = a.rfq_line_no
+         -- The reviewer judges a MIX of lines — laptops next to stationery — and
+         -- category is what tells them whether a price is even comparable to the
+         -- one above it. proc.rfq_lines has no category of its own; it reaches
+         -- the PR's own line through pr_line_id, which carries it (883/889 rows).
+         LEFT JOIN proc.pr_lines pl ON pl.id = l.pr_line_id
+         LEFT JOIN LATERAL (
+           SELECT q2.id, q2.lead_time_days
+             FROM proc.quotations q2
+            WHERE q2.rfq_id = cs.rfq_id
+              AND q2.vendor_id = a.vendor_id
+              AND q2.state IN ('Submitted','Awarded')
+            ORDER BY q2.version DESC LIMIT 1
+         ) q ON true
+         LEFT JOIN proc.quotation_lines ql
+           ON ql.quotation_id = q.id AND ql.rfq_line_no = a.rfq_line_no
+        WHERE a.cs_id = $1::uuid AND a.superseded_at IS NULL
+        ORDER BY a.rfq_line_no`,
+      [csId],
+      ctx,
+    );
+    const num = (v: any) => (v === null || v === undefined ? null : Number(v));
+    return r.rows.map((a: any) => ({
+      line_no: Number(a.rfq_line_no),
+      description: a.description ?? null,
+      quantity: num(a.quantity),
+      awarded_qty: num(a.awarded_qty),
+      uom: a.uom ?? null,
+      // Null on the ~0.6% of rfq_lines with no PR line; the UI renders an em-dash
+      // rather than inventing a category.
+      category: a.category ?? null,
+      lead_time_days: num(a.lead_time_days),
+      unit_price: num(a.unit_price),
+      gross_amount: num(a.gross_amount),
+      discount_percent: num(a.discount_percent),
+      discount_amount: num(a.discount_amount),
+      net_amount: num(a.net_amount),
+      tax_percent: num(a.tax_percent),
+      tax_amount: num(a.tax_amount),
+      line_total: num(a.line_total),
+      remarks: a.remarks ?? null,
+      is_masked: true,
+    }));
+  }
+
+  /**
+   * Should this viewer receive the MASKED matrix? Non-null only when so.
+   *
+   * Only the mapped originating-department approver is masked. Everybody else
+   * — procurement, CS, admin — reads the FULL matrix, including during
+   * REQUESTER_REVIEW. This method originally returned a truthy "reason" for any
+   * viewer whenever the stage was blind, which masked the whole screen for
+   * everyone: procurement, who ran the competition and must be able to see it,
+   * was shown the redacted grid with no way to act on the real figures.
+   *
+   * The stage alone is therefore not a reason to mask — being the reviewer is.
+   */
+  private async blindScope(prId: string, csId: string, userId: string, ctx: any): Promise<{ reason: string } | null> {
+    const r = await this.db.query<any>(
+      `SELECT
+         EXISTS (SELECT 1 FROM proc.cs_reviews cr
+                  JOIN proc.comparative_statements cs2 ON cs2.id = cr.cs_id
+                 WHERE cr.cs_id = $2::uuid AND cr.current_round = cs2.cs_round
+                   AND cr.sub_state = 'REQUESTER_REVIEW') AS in_blind_stage,
+         EXISTS (SELECT 1 FROM proc.pr_departments pd
+                  WHERE pd.pr_id = $1::uuid AND pd.hod_user_id = $3::uuid) AS is_mapped_hod`,
+      [prId, csId, userId],
+      ctx,
+    );
+    const inStage = r.rows[0]?.in_blind_stage === true;
+    const isHod = r.rows[0]?.is_mapped_hod === true;
+    if (!inStage || !isHod) return null;
+    return { reason: 'Withheld: you are reviewing this statement blind.' };
+  }
+
+  /**
+   * The blind grid: what the reviewer is allowed to judge — that the comparison
+   * covered the right items, in the right quantities, on the right lines.
+   *
+   * Deliberately NO price columns populated. The requested columns are
+   * Seq / Description / Qty / Proposed Unit Price / Line Total, but there is no
+   * non-leaking source for the last two: every unit price on this statement is a
+   * COMPETITOR's price, and showing one would hand the blind reviewer exactly the
+   * comparison the blind stage exists to withhold. They are emitted as null and
+   * the UI renders an em-dash. If a budget/estimate price is ever wanted here it
+   * has to come from the department's own figure, which this schema does not hold.
+   */
+  private async blindLines(rfqId: string | null, ctx: any) {
+    if (!rfqId) return [];
+    const r = await this.db.query<any>(
+      `SELECT l.line_no, l.description, l.quantity, l.uom
+         FROM proc.rfq_lines l
+        WHERE l.rfq_id = $1::uuid
+        ORDER BY l.line_no`,
+      [rfqId],
+      ctx,
+    );
+    return r.rows.map((l: any) => ({
+      line_no: Number(l.line_no),
+      description: l.description ?? null,
+      quantity: l.quantity === null ? null : Number(l.quantity),
+      uom: l.uom ?? null,
+      // The comparative keys are PRESENT and EMPTY rather than absent. Keeping
+      // the shape uniform means a consumer that iterates `lines` (the PDF
+      // compiler does) cannot crash on a missing property, and `bids: []` is
+      // still zero vendor data. A different shape would have been better
+      // isolation; a uniform one that cannot crash is the safer trade here
+      // because `blind_mode` is the flag that says it holds no bids.
+      bids: [] as any[],
+      lowest_unit_price: null,
+      awarded: null,
+      unit_price: null,
+      line_total: null,
+      is_masked: true,
+    }));
+  }
 
   private assertCanAward(role: string) {
     if (!roleAllowed(role, 'procurement,cs')) {
@@ -53,7 +229,7 @@ export class AwardService {
    * awards only make sense if the evaluator can see which vendor won which line
    * and by how much the alternatives differed.
    */
-  async matrix(csId: string, role: string) {
+  async matrix(csId: string, role: string, userId?: string) {
     // bypassRls, like VendorsService.list(): the comparative statement is a
     // back-office artefact and the session RLS policies are written for the
     // requester's own PRs, which would 403 a procurement officer reading a pack
@@ -70,12 +246,72 @@ export class AwardService {
     if (cs.rows.length === 0) throw new NotFoundException('comparative statement not found');
     const head = cs.rows[0];
 
+    // ── BLIND REVIEW (migration 065) ──────────────────────────────────────
+    //
+    // This endpoint is the ONE THE MATRIX TAB FETCHES, and it is a different
+    // payload from /pr/:id/cs. Masking only the CS screen left the whole
+    // comparative matrix — every vendor name, code, price and lead time —
+    // sitting behind the Matrix Form tab for the blind reviewer, under a banner
+    // claiming the detail was withheld. The banner was true of one request and
+    // false of the other.
+    //
+    // So the mask lives HERE as well. A control enforced on one of two
+    // endpoints serving the same screen is a control that depends on which tab
+    // the user happened to open.
+    if (userId) {
+      const blind = await this.blindScope(head.pr_id, csId, userId, ctx);
+      if (blind) {
+        const blindLines = await this.blindLines(head.rfq_id, ctx);
+        return {
+          cs: { id: head.id, number: head.cs_number, state: head.state, round: head.cs_round },
+          pr: { id: head.pr_id, number: head.pr_number, title: head.title },
+          currency: 'PKR',
+          // No vendor keys, no bids, no codes, no prices. The shape is a
+          // DIFFERENT shape, not the same one with nulls, so a client cannot
+          // render a comparative column by accident.
+          lines: blindLines,
+          // The awarded lines' full commercial breakdown, WITHOUT the vendor.
+          // This is what the blind reviewer is actually asked to judge: the
+          // rates, taxes, discounts and delivery terms of the recommendation,
+          // with the supplier's identity withheld. Awarding without recording
+          // them would make the review a rubber stamp, and the HOD would be
+          // confirming figures they were never shown.
+          awarded_lines_detail: await this.blindAwardDetail(csId, ctx),
+          awarded_lines: 0,
+          total_lines: blindLines.length,
+          complete: false,
+          is_masked: true,
+          blind_mode: true,
+          blind_notice:
+            // Names WHAT is withheld, not everything that is masked. It used to
+            // claim "unit prices, line totals ... are withheld" while the panel
+            // directly beneath it printed unit price, gross, discount, tax and
+            // line total - a reviewer reading it had no way to tell which
+            // statement was true, and the visible figures were the true ones.
+            'Blind review. Which vendor won, and the scores and recommendation behind it, ' +
+            'are withheld. The rates, taxes, discounts and delivery terms below are shown ' +
+            'in full - you are here to confirm they are acceptable, and a review that ' +
+            'showed no figures would be a rubber stamp.',
+          mask_reason:
+            'Only the originating department’s approver may see this statement unmasked.',
+        };
+      }
+    }
+
     // One row per line per vendor, from the LIVE quotation version only. A
     // superseded price is history and must never appear as a current bid.
     const cells = await this.db.query<any>(
       `SELECT l.line_no, l.description, l.quantity, l.uom,
               v.id AS vendor_id, v.vendor_code, v.legal_name,
-              ql.unit_price, ql.total_price, ql.remarks,
+              ql.unit_price,
+              -- line_total is what the line actually contributes to the quote
+              -- (net of discount, plus tax unless the quote was tax-inclusive).
+              -- total_price remains the pre-055 GROSS figure and is only a
+              -- fallback, so a row written before migration 055 still reads
+              -- correctly instead of showing gross as the amount payable.
+              COALESCE(ql.line_total, ql.total_price) AS total_price,
+              ql.remarks,
+              ql.warranty_months AS line_warranty_months,
               q.version, q.lead_time_days, q.warranty_months, q.payment_terms,
               q.validity_days, q.taxes_included, q.total_amount, q.submitted_at
          FROM proc.rfq_lines l
@@ -105,12 +341,27 @@ export class AwardService {
         vendor_id: c.vendor_id, vendor_code: c.vendor_code, vendor_name: c.legal_name,
         unit_price: c.unit_price === null ? null : Number(c.unit_price),
         line_total: c.total_price === null ? null : Number(c.total_price),
+        // The line's own facts. These are SELECTed above but were never copied
+        // onto the bid, so `line.quantity` was always Number(undefined) = NaN,
+        // which JSON serialises as null. Verified live: rfq_lines held the
+        // correct quantities (4/2/1/10/6/3) while the matrix reported every
+        // line as null, and a client that awards by sending line.quantity
+        // therefore posts awarded_qty = 0 — which cs_line_awards' own
+        // `awarded_qty > 0` CHECK refuses. Carried per-bid because they arrive
+        // from the same row and the line object reads them off the first bid.
+        quantity: c.quantity === null ? null : Number(c.quantity),
+        uom: c.uom ?? null,
+        description: c.description ?? null,
         remarks: c.remarks ?? null,
+        // Per-LINE warranty (migration 055) wins over the header value: warranty
+        // is a property of the item, and a single quote legitimately mixes a
+        // 5-year desktop with a 1-year chair. Falls back to the header for rows
+        // written before the line column existed.
+        warranty_months: c.line_warranty_months ?? c.warranty_months ?? null,
         version: c.version,
         // Delivery and SLA facts travel WITH the bid, not in a separate screen,
         // because a cheaper quote with a 90-day lead is not a cheaper quote.
         lead_time_days: c.lead_time_days ?? null,
-        warranty_months: c.warranty_months ?? null,
         payment_terms: c.payment_terms ?? null,
         validity_days: c.validity_days ?? null,
         taxes_included: c.taxes_included ?? null,
@@ -131,9 +382,7 @@ export class AwardService {
 
     const lines = [...byLine.entries()].map(([lineNo, bids]) => {
       const first = bids[0] as any;
-      const cheapest = bids
-        .filter((b) => b.unit_price !== null)
-        .sort((a, b) => Number(a.unit_price) - Number(b.unit_price))[0] ?? null;
+      const cheapest = cheapestBid(bids);
       const award = awardByLine.get(lineNo) ?? null;
       return {
         line_no: lineNo,
@@ -195,6 +444,47 @@ export class AwardService {
       );
     }
     const ctx = { role, userId, costCenterIds };
+
+    // DID THIS VENDOR ACTUALLY QUOTE THIS LINE?
+    //
+    // Verified live before adding it: the matrix UI disables the radio for a
+    // No Quote cell, but the endpoint accepted a POST awarding line 1 to a
+    // vendor that never priced it — writing "Should not be possible." into
+    // proc.cs_line_awards and the immutable audit trail. Hiding a control in
+    // the UI is not a control; anyone with the endpoint could do it, and any
+    // future UI regression would do it silently.
+    //
+    // The line must exist on the CS's RFQ, and this vendor must hold a LIVE
+    // quotation carrying a real unit price for it. 'Submitted' and 'Awarded'
+    // both count: locking a CS moves the winner's quotation to 'Awarded', and a
+    // re-award after that must not be refused. Superseded and Rejected are
+    // excluded — those are not live offers.
+    //
+    // Placed BEFORE the write because withTransaction() gives each statement
+    // its own COMMIT: a throw after the insert would not undo it.
+    const quoted = await this.db.query<any>(
+      `SELECT 1
+         FROM proc.comparative_statements cs
+         JOIN proc.quotations q
+           ON q.rfq_id = cs.rfq_id
+          AND q.vendor_id = $3::uuid
+          AND q.state IN ('Submitted','Awarded')
+         JOIN proc.quotation_lines ql
+           ON ql.quotation_id = q.id
+          AND ql.rfq_line_no = $2::int
+          AND ql.unit_price IS NOT NULL
+        WHERE cs.id = $1::uuid
+        LIMIT 1`,
+      [csId, lineNo, vendorId],
+      ctx,
+    );
+    if (quoted.rows.length === 0) {
+      throw new BadRequestException(
+        `That vendor did not quote line ${lineNo}. A line can only be awarded to a vendor ` +
+        'that priced it — awarding an unquoted line would put a price on the record that the ' +
+        'vendor never offered.',
+      );
+    }
 
     const r = await this.db.query<any>(
       `WITH prev AS (

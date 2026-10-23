@@ -12,7 +12,10 @@ export class AwardController {
   @Get('cs/:id/matrix')
   async matrix(@Param('id') id: string, @Req() req: any) {
     const u = req.user as AuthenticatedUser;
-    return this.svc.matrix(id, u.role);
+    // userId is REQUIRED for the blind mask: without it this endpoint cannot
+    // tell the originating HOD from any other reader, and the whole comparative
+    // matrix leaks behind the Matrix tab during REQUESTER_REVIEW.
+    return this.svc.matrix(id, u.role, u.id);
   }
 
   /**

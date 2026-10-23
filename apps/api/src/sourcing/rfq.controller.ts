@@ -30,6 +30,12 @@ class InviteVendorDto {
   @Matches(UUID_RE, { message: 'vendorId must be a UUID' }) vendorId!: string;
 }
 
+/** Re-issue takes the roster and the deadline only — see RfqIssueController. */
+class ReissueRfqDto {
+  @IsOptional() @IsArray() @IsString({ each: true }) vendorIds?: string[];
+  @IsOptional() @IsISO8601() deadlineAt?: string;
+}
+
 @UseGuards(JwtAuthGuard)
 @Controller('rfq')
 export class RfqController {
@@ -68,6 +74,25 @@ export class RfqIssueController {
   async issue(@Param('id') id: string, @Body() body: IssueRfqDto, @Req() req: any) {
     const u = req.user;
     return this.svc.issue(id, u.id, u.role, u.costCenterIds, body);
+  }
+
+  /**
+   * `POST /pr/:id/rfq/reissue` — the prototype's "Re-issue RFQ".
+   *
+   * Declared after the first issue because the paths differ in segment count, so
+   * there is no shadowing. The SAME dialog posts here instead of there once the
+   * PR carries an RFQ; what changes is the endpoint, not the form.
+   *
+   * The body is a strict subset of `IssueRfqDto` on purpose. A re-issue adds
+   * vendors to an RFQ that already exists, so there is no title, currency or
+   * incoterm left to choose — those were fixed at issue and the prototype
+   * carries them across untouched. Accepting them here would imply they were
+   * editable and silently drop them.
+   */
+  @Post(':id/rfq/reissue')
+  async reissue(@Param('id') id: string, @Body() body: ReissueRfqDto, @Req() req: any) {
+    const u = req.user;
+    return this.svc.reissue(id, u.id, u.role, u.costCenterIds, body);
   }
 
   /**
