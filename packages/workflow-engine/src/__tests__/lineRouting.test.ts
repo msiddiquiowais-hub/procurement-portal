@@ -21,9 +21,16 @@ import {
   buildSplitDrafts,
   approvedLineIndexes,
 } from '../lineRouting';
-import { resolveActor, LIGHT_ACTOR_REGISTRY, LIGHT_STAGE_LABEL, LIGHT_STAGE_OWNER } from '../actors';
+import {
+  resolveActor,
+  LIGHT_ACTOR_REGISTRY,
+  LIGHT_STAGE_LABEL,
+  LIGHT_STAGE_OWNER,
+  SUBSTAGE_OWNER_ROLE,
+  stageDepartmentLabel,
+} from '../actors';
 import { planAdvance, resolveNextStage, SPLIT_PARENT_STAGE } from '../engine';
-import { DEFAULT_WORKFLOW_STEPS, DEFAULT_MANAGEMENT_THRESHOLD, getStep } from '../steps';
+import { DEFAULT_WORKFLOW_STEPS, DEFAULT_GOVERNANCE_STEPS, DEFAULT_MANAGEMENT_THRESHOLD, getStep } from '../steps';
 import type { PrLine, PrSnapshot, RoutingConfig } from '../types';
 
 /**
@@ -432,7 +439,7 @@ test('T13.3 line rules are not consulted off the Submitted stage', () => {
   const plan = planAdvance(cfg(), p);
   assert.equal(plan.kind, 'transition');
   if (plan.kind !== 'transition') return;
-  assert.equal(plan.nextStage, 'IN_COST_CENTER_APPROVAL');
+  assert.equal(plan.nextStage, 'IN_FINANCE_REVIEW');
   assert.equal(plan.lineRoutingApplied, false);
 });
 
@@ -469,14 +476,113 @@ test('T15.1 hod_review carries the 3 prototype line rules in order', () => {
   assert.equal(rules[2].routeTo, 'IN_WAREHOUSE');
 });
 
+/**
+ * The prototype's twelve steps, in order. This list is the fidelity contract:
+ * PROCUREMENT_PORTAL_PROTOTYPE.html is the source of truth for the workflow, so
+ * nothing here may be removed, reordered or renamed without a decision.
+ */
+const PROTOTYPE_STEP_KEYS = [
+  'rework', 'reject', 'fulfilled_stock', 'out_of_stock', 'warehouse_check',
+  'hod_review', 'procurement', 'cost_center', 'finance_review', 'finance_release',
+  'management', 'd365_push',
+];
+
+/**
+ * The prototype's steps that are DELIBERATELY NOT IN THE LADDER, each with the
+ * business decision that removed it.
+ *
+ * MIGRATION 075 — cost_center. The ruling: the blind-review confirmation by
+ * the requesting HOD IS the cost approval event, so the CS exit crosses
+ * straight into Finance review and the separate manual gate is gone.
+ *
+ * The prototype DOES have that stage, with its own two buttons (lines
+ * 3002-3005). Removing it is a change to the prototype's meaning and not a
+ * port of it, which is why it is listed here rather than quietly dropped: a
+ * step that is REMOVED is a business decision exactly as much as a step that is
+ * added, and this list is where both live.
+ *
+ * The stage was also unusable: its only exit named an actorRole nobody signs
+ * in as, from a stage no control in the app could act on, and 117 requests were
+ * sitting in it.
+ */
+const REMOVED_PROTOTYPE_STEPS: Record<string, string> = {
+  cost_center:
+    'migration 075: the CS confirmation is the cost approval event, so the CS exit '
+    + 'crosses straight into Finance review and the separate manual gate is removed',
+};
+
+/**
+ * Steps ADDED on top of the prototype, each an approved business decision rather
+ * than a port. Listed explicitly so a second addition cannot slip through by
+ * editing a number: this test fails if the non-prototype set is not EXACTLY this.
+ */
+const APPROVED_NON_PROTOTYPE_STEPS: Record<string, string> = {
+  // Migrations 060/061. Procurement is a sourcing function, not the demand owner,
+  // so it has no reject — its whole authority at IN_PROCUREMENT_REVIEW is
+  // returning the PR to the HOD with mandatory remarks.
+  revert_to_hod: 'procurement returns the PR to the HOD with remarks',
+  // Migrations 064/065, promoted into the default set by the 2026-10-21
+  // decision to make the CS module step 5 of the ladder.
+  //
+  // These two were seeded straight into workflow.steps_config and were NOT in
+  // this default set, which had a real consequence: `POST /workflow/config/reset`
+  // upserts the defaults at order_index = array position, so a reset renumbered
+  // the defaults over the top of the two database-only rows and stranded the CS
+  // steps at the end of the table. They are in the default set now, which is
+  // also what lets the ladder be expressed as one list.
+  //
+  // `ready_for_cs` is the forward INTO the comparative statement and
+  // `cs_review` is the exit from it. The exit carries `requiresCapexOpex`: the
+  // per-line Capex/Opex class is made there, by the desk that ran the
+  // competition, and the request may not cross into Cost approval until every
+  // approved line carries one.
+  ready_for_cs: 'procurement forwards the finished competition to the comparative statement',
+  cs_review: 'the CS is confirmed, its winning rates are written to the lines, and every line is classified',
+  // Migration 071, the 2026-10-21 decision to move the classification gate off
+  // the blind confirm and onto the crossing into Cost approval.
+  //
+  // `cs_review` above leaves IN_PROCUREMENT_REVIEW. A comparative statement is
+  // equally real at QUOTES_RECEIVED — `ready_for_cs` parks the request there and
+  // the statement is generated, reviewed blind and confirmed from there. A step
+  // declares ONE `from`, so the CS exit needs a second row rather than a widened
+  // one, and this is that row: same destination, same decision flag, same gate,
+  // different source stage.
+  //
+  // It is not an eighteenth step of the ladder. Nothing is reordered relative to
+  // anything, and no prototype step changed. It exists because with the confirm
+  // no longer writing the stage, a request parked at QUOTES_RECEIVED otherwise
+  // had NO route into Cost approval at all — the only other step out of that
+  // stage is mc_approval, and the transition trigger forbids
+  // QUOTES_RECEIVED -> MC_APPROVED, so firing it raised a check violation.
+  cs_review_quotes: 'the CS is confirmed at QUOTES_RECEIVED and the classified request advances to Cost approval',
+};
+
 test('T15.2 all 12 prototype steps are present with stable order', () => {
-  assert.equal(DEFAULT_WORKFLOW_STEPS.length, 12);
+  const keys = DEFAULT_WORKFLOW_STEPS.map(s => s.key);
+
+  const extras = keys.filter(k => !PROTOTYPE_STEP_KEYS.includes(k));
   assert.deepEqual(
-    DEFAULT_WORKFLOW_STEPS.map(s => s.key),
-    ['rework', 'reject', 'fulfilled_stock', 'out_of_stock', 'warehouse_check',
-     'hod_review', 'procurement', 'cost_center', 'finance_review', 'finance_release',
-     'management', 'd365_push'],
+    Object.keys(APPROVED_NON_PROTOTYPE_STEPS).sort(),
+    [...extras].sort(),
+    'non-prototype steps drifted. Approved additions are exactly '
+    + `${JSON.stringify(Object.keys(APPROVED_NON_PROTOTYPE_STEPS))}; found ${JSON.stringify(extras)}. `
+    + 'Adding a step is a business decision, not a port — record it here and say why.',
   );
+
+  // The prototype's own twelve, in their own order, untouched by any addition --
+  // MINUS the ones a recorded business decision removed. Both directions are
+  // business decisions and both are listed, so neither can happen quietly.
+  const expectedPrototypeSteps = PROTOTYPE_STEP_KEYS.filter(
+    k => !(k in REMOVED_PROTOTYPE_STEPS),
+  );
+  assert.deepEqual(keys.filter(k => PROTOTYPE_STEP_KEYS.includes(k)), expectedPrototypeSteps);
+  assert.equal(PROTOTYPE_STEP_KEYS.length, 12);
+
+  // And a removed prototype step is really gone, not renamed into the extras.
+  for (const removed of Object.keys(REMOVED_PROTOTYPE_STEPS)) {
+    assert.ok(!keys.includes(removed),
+      removed + ' was removed by a recorded decision and must not be in the ladder');
+  }
 });
 
 test('T15.3 every step actorRole resolves to a real address', () => {
@@ -495,7 +601,16 @@ test('T15.3 every step actorRole resolves to a real address', () => {
 test('T15.4 every step has a human-readable name and stage label', () => {
   for (const s of DEFAULT_WORKFLOW_STEPS) {
     assert.ok(s.name, `${s.key} has no name`);
-    assert.ok(LIGHT_STAGE_LABEL[s.to], `${s.key} targets unlabelled stage ${s.to}`);
+    // The full vocabulary, not LIGHT_STAGE_LABEL alone.
+    //
+    // LIGHT_STAGES is the DEPARTMENTAL ladder and deliberately does not carry
+    // the sourcing sub-states — its own comment says so, and explains why
+    // (the admin editor's Target-state select unions it with STAGE_LABEL
+    // anyway). The CS sub-states live in STAGE_DEPARTMENT, and the app's own
+    // "label for a stage" function already reads both. Asserting against the
+    // narrower map would have said that the CS step targets an unlabelled
+    // stage, which is not true of the application — only of the map.
+    assert.ok(stageDepartmentLabel(s.to), `${s.key} targets unlabelled stage ${s.to}`);
   }
 });
 
@@ -509,8 +624,220 @@ test('T15.5 line-rule route targets are all labelled stages', () => {
 
 test('T15.6 every stage has an owner role', () => {
   for (const s of DEFAULT_WORKFLOW_STEPS) {
-    assert.ok(LIGHT_STAGE_OWNER[s.to], `no owner for ${s.to}`);
+    // LIGHT_STAGE_OWNER, then SUBSTAGE_OWNER_ROLE.
+    //
+    // The same split as T15.4: LIGHT_STAGE_OWNER is the departmental map and
+    // deliberately leaves the sourcing sub-states out, because it feeds the
+    // "My Approvals" queue and the governance screens are not ordinary queue
+    // items. The sub-states have their own owner map for exactly that
+    // reason. What this test is really asking is "does every stage have
+    // somebody whose desk it is?" — and both maps answer that.
+    const owner = LIGHT_STAGE_OWNER[s.to] ?? SUBSTAGE_OWNER_ROLE[s.to];
+    assert.ok(owner, `no owner for ${s.to}`);
   }
+});
+
+// ─── T17 · the classification gate covers BOTH doors out of step 4 ─────────
+
+test('T17.1 every route out of IN_PROCUREMENT_REVIEW into cost approval is gated', () => {
+  // The audit's Finding 1, locked down.
+  //
+  // `cs_review` carried requiresCapexOpex while the ordinary `procurement`
+  // approval (`when: always`, same stage, same target) did not — so a request
+  // whose lines already held the REQUESTER's estimate walked to cost approval
+  // with no comparative statement, no award and no Capex/Opex class. The cost
+  // gate caught only the unpriced case.
+  //
+  // The assertion is about the PAIR, deliberately: a test that names either step
+  // on its own passes while the other one stays open, which is exactly what
+  // happened. So this enumerates the routes and requires every one to be gated.
+  const routes = DEFAULT_WORKFLOW_STEPS.filter(
+    s => s.from === 'IN_PROCUREMENT_REVIEW' && s.to === 'IN_FINANCE_REVIEW',
+  );
+  assert.equal(routes.length, 2, `expected 2 routes into Finance review, got ${routes.map(r => r.key)}`);
+  for (const s of routes) {
+    assert.equal(s.requiresCapexOpex, true, `${s.key} leaves step 4 ungated`);
+  }
+});
+
+test('T17.2 no other step carries the classification gate', () => {
+  // The flag used to sit on `finance_review` and `finance_release` — steps
+  // LATER than cost approval — so it gated a point the spend had already passed.
+  //
+  // Asserted as the three ROUTES rather than as a list of keys, because the list
+  // is a statement about how many doors exist and the claim worth keeping is
+  // about which ones are locked. Migration 070 opened a second door
+  // (`procurement`); 071 opened a third (`cs_review_quotes`, the same CS exit
+  // reached from QUOTES_RECEIVED). Each of those broke a count written before
+  // them, and a count is the wrong shape for this assertion: the failure mode
+  // being guarded against is a step that ARRIVES somewhere without the gate,
+  // which a count cannot see.
+  const flagged = DEFAULT_WORKFLOW_STEPS.filter(s => s.requiresCapexOpex);
+  assert.deepEqual(
+    flagged.map(s => s.key).sort(),
+    ['cs_review', 'cs_review_quotes', 'procurement'],
+    'every route from a sourcing stage into cost approval is gated, and nothing else is',
+  );
+
+  // The direction of the flag is the actual invariant: a step that CONTINUES
+  // past cost approval must not carry it, because the number has already been
+  // approved by the cost centre by then. This is the assertion that would have
+  // caught the original misplacement, and it survives another door being added.
+  for (const s of flagged) {
+    assert.equal(s.to, 'IN_FINANCE_REVIEW',
+      `${s.key} carries the classification gate but does not arrive at Finance review`);
+  }
+
+  // ...and stated positively, so the next person to add a route out of sourcing
+  // has to write down here that they gated it.
+  for (const s of DEFAULT_WORKFLOW_STEPS) {
+    if (!['IN_PROCUREMENT_REVIEW', 'QUOTES_RECEIVED'].includes(s.from)) continue;
+    if (s.to !== 'IN_FINANCE_REVIEW') continue;
+    assert.equal(s.requiresCapexOpex, true,
+      `${s.key} crosses from ${s.from} into Finance review without the classification gate`);
+  }
+});
+
+test('T17.3 no default step is owned by the retired procurement_manager role', () => {
+  // Procurement is a department under the same HOD hierarchy as every other one,
+  // so its head is a `hod`. `procurement_manager` was a role string that nothing
+  // was ever assigned: the cs_review step it owned was a gate nobody could pass,
+  // which reads as protection and is not.
+  //
+  // `hod` is asserted too, and it is NOT sufficient on its own — roleAllowed
+  // ('hod','hod') is true for all five department heads, which is why the
+  // service resolves HOD Procurement from core.departments rather than here.
+  for (const s of DEFAULT_WORKFLOW_STEPS) {
+    assert.notEqual(s.actorRole, 'procurement_manager', `${s.key} is owned by a retired role`);
+  }
+  assert.equal(getStep(cfg().steps, 'cs_review')?.actorRole, 'hod');
+});
+
+test('T17.4 the cs_review step is fireable only behind a confirmed review', () => {
+  // Its condition keyword is in the predicate vocabulary and its flag is a
+  // declared property on the advance DTO, so the step is REACHABLE — which it
+  // was not for as long as the DTO stripped the flag. That is why the API
+  // verifies a CONFIRMED review row before honouring `csReviewConfirmed`: the
+  // route exists, so it has to be closed by a fact and not by silence.
+  const cs = getStep(cfg().steps, 'cs_review')!;
+  assert.equal(cs.when, 'csExitComplete');
+  assert.equal(cs.from, 'IN_PROCUREMENT_REVIEW');
+  assert.equal(cs.to, 'IN_FINANCE_REVIEW');
+  assert.equal(cs.requiresCapexOpex, true);
+
+  // And the keyword must not be coerced to 'always', or the step would hijack
+  // every plain procurement approval out of this stage.
+  const plain = planAdvance(cfg(), pr({ status: 'IN_PROCUREMENT_REVIEW' }), {});
+  assert.equal(plain.kind, 'transition');
+  assert.equal(plain.kind === 'transition' ? plain.step.key : null, 'procurement',
+    'an empty decision must take the plain step');
+
+  // MIGRATION 075 — the condition is now csExitComplete: the review closed AND
+  // every line being bought carrying a class. So the flag ALONE no longer makes
+  // the step reachable, and that is the whole point of the change.
+  const classified = {
+    status: 'IN_PROCUREMENT_REVIEW' as const,
+    lines: [line({ approved: true, classification: 'OPEX_ASSET' })],
+  };
+
+  // The flag but no classification: the step must NOT fire. If it did, the
+  // control would be the flag alone, and anyone who could post it could walk
+  // the gate without classifying a line.
+  const half = planAdvance(
+    cfg(),
+    pr({ status: 'IN_PROCUREMENT_REVIEW',
+         lines: [line({ approved: true, classification: null })] }),
+    { csReviewConfirmed: true },
+  );
+  assert.notEqual(half.kind === 'transition' ? half.step.key : null, 'cs_review',
+    'the review flag alone must not fire the CS exit — the lines must be classified too');
+
+  // Both halves: the step fires, and it fires INSTEAD of the plain step.
+  const flagged = planAdvance(cfg(), pr(classified), { csReviewConfirmed: true });
+  assert.equal(flagged.kind === 'transition' ? flagged.step.key : null, 'cs_review',
+    'the review confirmed AND the lines classified together make the step reachable');
+  assert.equal(flagged.kind === 'transition' ? flagged.nextStage : null, 'IN_FINANCE_REVIEW');
+});
+
+test('T17.5 the CS exit is reachable from QUOTES_RECEIVED too', () => {
+  // The 2026-10-21 fix. The blind confirm used to write
+  // `UPDATE proc.purchase_requisitions SET status = step.to` directly, which is
+  // why the classification gate had to be duplicated into CsReviewService and
+  // why the requesting HOD could not finish a blind review. With the confirm no
+  // longer moving the request, the advance is the only thing that can — so it
+  // has to exist from EVERY sourcing stage, not just one.
+  //
+  // Before this step, a request at QUOTES_RECEIVED had no route into cost
+  // approval at all. The only other candidate there is mc_approval (when:
+  // 'always', to MC_APPROVED) and proc.fn_check_pr_transition forbids
+  // QUOTES_RECEIVED -> MC_APPROVED, so the request could only ever be moved by
+  // the confirm's back-door write.
+  const quotes = getStep(cfg().steps, 'cs_review_quotes')!;
+  assert.equal(quotes.from, 'QUOTES_RECEIVED');
+  assert.equal(quotes.to, 'IN_FINANCE_REVIEW');
+  assert.equal(quotes.when, 'csExitComplete');
+  assert.equal(quotes.requiresCapexOpex, true);
+
+  // It must WIN at that stage, and only behind BOTH halves of the exit.
+  const classified = {
+    status: 'QUOTES_RECEIVED' as const,
+    lines: [line({ approved: true, classification: 'OPEX_ASSET' })],
+  };
+  const flagged = planAdvance(cfg(), pr(classified), { csReviewConfirmed: true });
+  assert.equal(flagged.kind === 'transition' ? flagged.step.key : null, 'cs_review_quotes',
+    'the confirmed review AND the classified lines route QUOTES_RECEIVED into Finance review');
+  assert.equal(flagged.kind === 'transition' ? flagged.nextStage : null, 'IN_FINANCE_REVIEW');
+
+  // The flag alone is not enough — see T17.4. The classification is a second,
+  // independent half of the same gate.
+  const half = planAdvance(cfg(), pr({ status: 'QUOTES_RECEIVED' }), { csReviewConfirmed: true });
+  assert.notEqual(half.kind === 'transition' ? half.step.key : null, 'cs_review_quotes',
+    'the review flag alone must not fire the CS exit');
+
+  // Fails CLOSED: no flag, no match. A keyword outside the vocabulary is coerced
+  // to 'always' by evaluatePredicate and would hijack every advance out of this
+  // stage, so this is the assertion that keeps that from happening.
+  //
+  // The DEFAULT set has no other step out of QUOTES_RECEIVED — mc_approval is a
+  // GOVERNANCE step and lives in DEFAULT_GOVERNANCE_STEPS, which the live table
+  // merges in. So here the honest statement is "nothing matches", and in the
+  // live table it is "mc_approval matches, and the transition trigger forbids the
+  // edge it writes". Both are asserted; neither is a transition to cost approval.
+  const plain = planAdvance(cfg(), pr({ status: 'QUOTES_RECEIVED' }), {});
+  assert.notEqual(plain.kind === 'transition' ? plain.step.key : null, 'cs_review_quotes',
+    'an empty decision must not reach the CS exit');
+
+  const governance = planAdvance(
+    { steps: [...cfg().steps, ...DEFAULT_GOVERNANCE_STEPS], managementThreshold: 1_000_000 },
+    pr({ status: 'QUOTES_RECEIVED' }),
+    {},
+  );
+  assert.equal(governance.kind === 'transition' ? governance.step.key : null, 'mc_approval',
+    'the governance branch out of QUOTES_RECEIVED is untouched by this step');
+  assert.notEqual(governance.kind === 'transition' ? governance.nextStage : null, 'IN_FINANCE_REVIEW',
+    'an unflagged advance out of QUOTES_RECEIVED must not reach cost approval');
+
+  // ...and with the flag it still wins against that branch, because the CS exit
+  // carries the lower order.
+  const both = planAdvance(
+    { steps: [...cfg().steps, ...DEFAULT_GOVERNANCE_STEPS], managementThreshold: 1_000_000 },
+    pr({ status: 'QUOTES_RECEIVED',
+         lines: [line({ approved: true, classification: 'OPEX_ASSET' })] }),
+    { csReviewConfirmed: true },
+  );
+  assert.equal(both.kind === 'transition' ? both.step.key : null, 'cs_review_quotes');
+
+  // And it must not interfere at the OTHER sourcing stage, where cs_review still
+  // owns the exit. Two steps with the same destination are fine; two steps
+  // claiming the same stage is how a branch becomes unreachable.
+  const other = planAdvance(
+    cfg(),
+    pr({ status: 'IN_PROCUREMENT_REVIEW',
+         lines: [line({ approved: true, classification: 'OPEX_ASSET' })] }),
+    { csReviewConfirmed: true },
+  );
+  assert.equal(other.kind === 'transition' ? other.step.key : null, 'cs_review',
+    'cs_review still owns the exit from IN_PROCUREMENT_REVIEW');
 });
 
 // ─── T16 · actor resolution ───────────────────────────────────────────────

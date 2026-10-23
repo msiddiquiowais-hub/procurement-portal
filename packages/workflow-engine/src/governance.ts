@@ -103,7 +103,7 @@ export const GOVERNANCE_NEXT: Record<string, string[]> = {
   // A full PR sits at IN_PROCUREMENT_REVIEW for the whole sourcing block, so
   // the chain hangs off it. PACK_LOCKED from here is the FAST_TRACK shortcut
   // (prototype line 7205): MC and CFO are skipped, not "auto-approved".
-  IN_PROCUREMENT_REVIEW: ['IN_COST_CENTER_APPROVAL', 'QUOTES_RECEIVED', 'CS_LOCKED', 'PACK_LOCKED'],
+  IN_PROCUREMENT_REVIEW: ['IN_FINANCE_REVIEW', 'QUOTES_RECEIVED', 'CS_LOCKED', 'PACK_LOCKED'],
   // Quotes received -> CS locked, or back to sourcing to revise the RFQ.
   QUOTES_RECEIVED: ['CS_LOCKED', 'IN_PROCUREMENT_REVIEW'],
   // The two exits are the MC's approve and the MC's reject. They point in

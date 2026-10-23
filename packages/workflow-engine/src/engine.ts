@@ -23,7 +23,7 @@
 //      matching decision flag, so they never fire on an ordinary advance.
 // ---------------------------------------------------------------------------
 
-import { LIGHT_STAGE_OWNER, resolveActor } from './actors';
+import { LIGHT_STAGE_OWNER, SUBSTAGE_OWNER_ROLE, resolveActor } from './actors';
 import { buildSplitDrafts, evaluateLineRules, type ChildPrDraft } from './lineRouting';
 import { evaluatePredicate, predicateContext } from './predicates';
 import type {
@@ -226,9 +226,19 @@ export function planAdvance(
 }
 
 /**
- * The stage owner role for a stage — drives the "My Approvals" queue filter.
- * Port of the prototype's LIGHT_STAGE_OWNER.
+ * The stage owner role for a stage — drives the "My Approvals" queue filter and
+ * the PR detail page's read-only banner ("Stage owner is <owner> — acting as
+ * <you>, this is read-only").
+ *
+ * Port of the prototype's LIGHT_STAGE_OWNER, extended by
+ * `SUBSTAGE_OWNER_ROLE` for the five Wave-3 governance states.
+ *
+ * Those five used to fall through to the `'system'` literal here, so every PR
+ * on them reported "Stage owner is system" — wrong (CS and MC own them) and
+ * unhelpful (it names nowhere to go). `STAGE_ACTIONS` on the PR detail page
+ * deliberately has no entry for them either, so nothing else in the UI was
+ * going to name the owner either.
  */
 export function stageOwnerRole(stage: Stage): string {
-  return LIGHT_STAGE_OWNER[stage] || 'system';
+  return LIGHT_STAGE_OWNER[stage] || SUBSTAGE_OWNER_ROLE[stage] || 'system';
 }

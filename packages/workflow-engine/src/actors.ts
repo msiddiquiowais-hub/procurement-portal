@@ -101,6 +101,86 @@ export const LIGHT_STAGES: Array<{ k: Stage; label: string }> = [
 export const LIGHT_STAGE_LABEL: Record<string, string> =
   Object.fromEntries(LIGHT_STAGES.map(s => [s.k, s.label]));
 
+/**
+ * DEPARTMENTAL LOCUS OF CONTROL for the sourcing/governance SUB-STATES.
+ *
+ * WHY THIS EXISTS — the grid showed raw sub-states where the department should be
+ * `StagePill` labels a stage from `LIGHT_STAGE_LABEL`. The five Wave-3
+ * governance stages are stored in the same `pr.status` column (migration 027 put
+ * them in the CHECK constraint) but are NOT in `LIGHT_STAGES`, so they fell
+ * through to the snake-case humaniser and the STAGE column rendered
+ * "Quotes received", "Pack locked" and "Cs locked" verbatim. On a live estate
+ * that was 221 PRs — 17% of the visible grid — displaying a progress marker in
+ * the column that is supposed to answer "whose desk is this on?".
+ *
+ * `LIGHT_STAGES` itself is deliberately NOT extended: it is the stage VOCABULARY
+ * consumed by the admin workflow editor's Target-state select
+ * (`admin-workflow.tsx` unions it with `STAGE_LABEL`). Adding sub-states there
+ * would add routing targets to an editor that should only offer departmental
+ * transitions. This map is presentation-only.
+ *
+ * Each mapping is taken from a place the codebase already states the actor, not
+ * inferred:
+ *   QUOTES_RECEIVED -> CS   cs.service builds the Comparative Statement from a PR
+ *                              at exactly this state (`cs.service.ts`, the
+ *                              `status = 'QUOTES_RECEIVED'` load).
+ *   CS_LOCKED      -> MC   cs.service: "the committee now has something to vote
+ *                              on"; steps.ts `mc_approval.actorRole = 'mc'`.
+ *   PACK_LOCKED    -> CS   governance.service `packAlert`: "Pack locked. Switch
+ *                              to CS role and click Push to D365 F&O."
+ *   MC_APPROVED    -> CFO  ordered after MC in the governance chain
+ *                              (steps.ts `cfo_approval.actorRole = 'cfo'`).
+ *   CFO_APPROVED   -> CS   CS freezes the pack that unblocks D365
+ *                              (`governance.lockPack`), and po.service admits
+ *                              only PACK_LOCKED.
+ *
+ * The last two are read off the chain's order rather than from an explicit
+ * statement about those two states. Both currently hold ZERO PRs on the estate,
+ * so the inference changes nothing today; if either is ever seeded, the label is
+ * the thing to re-check.
+ */
+export const STAGE_DEPARTMENT: Record<string, string> = {
+  QUOTES_RECEIVED: 'CS review',
+  CS_LOCKED: 'MC review',
+  MC_APPROVED: 'CFO review',
+  CFO_APPROVED: 'CS review',
+  PACK_LOCKED: 'CS review',
+};
+
+/**
+ * OWNER ROLE for each sourcing/governance SUB-STATE, on the same evidence as
+ * `STAGE_DEPARTMENT` above.
+ *
+ * `LIGHT_STAGE_OWNER` drives the "My Approvals" queue AND the PR detail page's
+ * read-only banner, which reads "Stage owner is <owner> — acting as <you>,
+ * this is read-only". Because it had no entry for the five Wave-3 states, all
+ * 221 of those PRs told the reader "Stage owner is system" — which is both
+ * wrong (CS and MC own them) and useless, because it named nowhere to go.
+ *
+ * Deliberately NOT added to `LIGHT_STAGE_OWNER`: that map feeds the approvals
+ * queue, and putting CS/MC there would make the governance screens appear as
+ * ordinary queue items with a different route and approval grammar.
+ */
+export const SUBSTAGE_OWNER_ROLE: Record<string, Role> = {
+  QUOTES_RECEIVED: 'cs',
+  CS_LOCKED: 'mc',
+  MC_APPROVED: 'cfo',
+  CFO_APPROVED: 'cs',
+  PACK_LOCKED: 'cs',
+};
+
+/**
+ * The label for a stage, answering "whose desk is this on?".
+ *
+ * Falls back to the prototype's own snake-case humaniser only for values outside
+ * every vocabulary — an unknown status should still read as words rather than
+ * vanish, but it is not silently promoted to a department.
+ */
+export const stageDepartmentLabel = (stage: string): string =>
+  LIGHT_STAGE_LABEL[stage] ??
+  STAGE_DEPARTMENT[stage] ??
+  stage.replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());
+
 /** Owner role per stage — drives the "My Approvals" queue filter. */
 export const LIGHT_STAGE_OWNER: Record<string, Role> = {
   Submitted: 'requester',
